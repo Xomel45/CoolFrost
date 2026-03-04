@@ -2,3 +2,4 @@ backup/
 iso/
 FrostOS.iso
 hdd.img
+*.o
