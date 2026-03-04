@@ -8,4 +8,7 @@ typedef struct {
     uint8_t           cpuid_supported;
     char              cpu_manufacturer[13];
     char              cpu_full_name[49];
+    char             *kernel_name;
+    char             *kernel_version;
+    char             *kernel_codename;
 } kernel_globals;
