@@ -6,6 +6,9 @@ FrostOS
   <img src="assets/6-3-2026_2.png" width="400" alt="6-3-2026_2">
 </p>
 
+> [!warning]
+> I AM NOT RESPONSIBLE IF ANYTHING WILL HAPPEN WITH YOUR DEVICE. THERE SHALL
+> BE NO EXPECTATIONS THE SYSTEM WOULD WORK PERFECTLY ON ANY MACHINE.
 
 A hobby OS made for self-learning.
 

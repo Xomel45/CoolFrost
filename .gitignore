@@ -3,3 +3,5 @@ iso/
 FrostOS.iso
 hdd.img
 *.o
+*.bin
+*.elf
