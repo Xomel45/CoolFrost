@@ -1,17 +1,17 @@
+[BITS 64]
 global check_cpuid
 
-; int check_cpuid();
-; Returns: EAX = 0 if ID bit cannot be changed (no CPUID)
-;          EAX != 0 if ID bit can be changed (CPUID supported)
-
+; int check_cpuid(void);
+; Returns: rax != 0 if CPUID is supported, 0 otherwise.
+; Checks whether the CPUID ID bit (bit 21) in RFLAGS can be toggled.
 check_cpuid:
-    pushfd                      ; Save original EFLAGS
-    pushfd                      ; Copy of original EFLAGS
-    xor dword [esp], 0x00200000 ; Flip ID bit in the stored copy
-    popfd                       ; Load modified flags
-    pushfd                      ; Push modified EFLAGS
-    pop eax                     ; eax = modified flags
-    xor eax, [esp]              ; eax = bits that changed
-    popfd                       ; Restore original EFLAGS
-    and eax, 0x00200000         ; Mask only ID bit
+    pushfq                          ; save original RFLAGS
+    pushfq                          ; copy to stack for modification
+    xor qword [rsp], 0x00200000     ; flip ID bit in the copy
+    popfq                           ; load modified RFLAGS
+    pushfq                          ; push the result back
+    pop rax                         ; rax = actual RFLAGS after modification
+    xor rax, [rsp]                  ; bits that actually changed
+    popfq                           ; restore original RFLAGS
+    and eax, 0x00200000             ; mask only ID bit (result fits in 32 bits)
     ret

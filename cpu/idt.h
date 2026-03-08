@@ -6,34 +6,31 @@
 /* Segment selectors */
 #define KERNEL_CS 0x08
 
-/* How every interrupt gate (handler) is defined */
+/*
+ * 64-bit IDT gate descriptor (16 bytes per entry).
+ * Ref: Intel SDM Vol.3 §6.14.1
+ */
 typedef struct {
-    uint16_t low_offset; /* Lower 16 bits of handler function address */
-    uint16_t sel; /* Kernel segment selector */
-    uint8_t always0;
-    /* First byte
-     * Bit 7: "Interrupt is present"
-     * Bits 6-5: Privilege level of caller (0=kernel..3=user)
-     * Bit 4: Set to 0 for interrupt gates
-     * Bits 3-0: bits 1110 = decimal 14 = "32 bit interrupt gate" */
-    uint8_t flags; 
-    uint16_t high_offset; /* Higher 16 bits of handler function address */
-} __attribute__((packed)) idt_gate_t ;
+    uint16_t low_offset;    /* bits  0-15  of handler address */
+    uint16_t sel;           /* kernel code segment selector   */
+    uint8_t  ist;           /* interrupt stack table index (0 = none) */
+    uint8_t  flags;         /* P, DPL, type (0x8E = 64-bit interrupt gate) */
+    uint16_t mid_offset;    /* bits 16-31  of handler address */
+    uint32_t high_offset;   /* bits 32-63  of handler address */
+    uint32_t zero;          /* reserved, must be 0 */
+} __attribute__((packed)) idt_gate_t;
 
-/* A pointer to the array of interrupt handlers.
- * Assembly instruction 'lidt' will read it */
+/* IDTR: limit is 16-bit, base is 64-bit in long mode */
 typedef struct {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 } __attribute__((packed)) idt_register_t;
 
 #define IDT_ENTRIES 256
-extern idt_gate_t idt[IDT_ENTRIES];
+extern idt_gate_t    idt[IDT_ENTRIES];
 extern idt_register_t idt_reg;
 
-
-/* Functions implemented in idt.c */
-void set_idt_gate(int n, uint32_t handler);
-void set_idt();
+void set_idt_gate(int n, uint64_t handler);
+void set_idt(void);
 
 #endif

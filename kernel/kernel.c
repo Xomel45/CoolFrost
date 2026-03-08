@@ -49,7 +49,7 @@ kernel_globals *get_kernel_globals() {
 }
 
 // Function that is called at the very start of the kernel to perform needed operations before, like initializing everything
-void kstart(uint32_t addr) {
+void kstart(uintptr_t addr) {
     isr_install();
     irq_install();
 
@@ -81,14 +81,14 @@ void pci_scan_devs() {
             }
 }
 
-void kernel_main(uint32_t magic, uint32_t addr) {
+void kernel_main(uintptr_t magic, uintptr_t addr) {
     kstart(addr);
     sleep_ms(5000);
     clear_screen();
 
     KHEAPBM kheap;
     k_heapBMInit(&kheap);
-    k_heapBMAddBlock(&kheap, (uint32_t *)0x800000, 0x100000, 16);
+    k_heapBMAddBlock(&kheap, (void *)0x800000, 0x100000, 16);
     buffer = (char *)k_heapBMAlloc(&kheap, 512);
     // TODO: FIX HEAP ALLOCATION
     pci_devs = (uint16_t *)(uintptr_t)0x900000; // Works but should use a heap allocator

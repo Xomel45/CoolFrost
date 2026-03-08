@@ -36,6 +36,7 @@ extern void isr28();
 extern void isr29();
 extern void isr30();
 extern void isr31();
+
 /* IRQ definitions */
 extern void irq0();
 extern void irq1();
@@ -54,16 +55,16 @@ extern void irq13();
 extern void irq14();
 extern void irq15();
 
-#define IRQ0 32
-#define IRQ1 33
-#define IRQ2 34
-#define IRQ3 35
-#define IRQ4 36
-#define IRQ5 37
-#define IRQ6 38
-#define IRQ7 39
-#define IRQ8 40
-#define IRQ9 41
+#define IRQ0  32
+#define IRQ1  33
+#define IRQ2  34
+#define IRQ3  35
+#define IRQ4  36
+#define IRQ5  37
+#define IRQ6  38
+#define IRQ7  39
+#define IRQ8  40
+#define IRQ9  41
 #define IRQ10 42
 #define IRQ11 43
 #define IRQ12 44
@@ -71,25 +72,30 @@ extern void irq15();
 #define IRQ14 46
 #define IRQ15 47
 
-/* Struct which aggregates many registers.
- * It matches exactly the pushes on interrupt.asm. From the bottom:
- * - Pushed by the processor automatically
- * - `push byte`s on the isr-specific code: error code, then int number
- * - All the registers by pusha
- * - `push eax` whose lower 16-bits contain DS
+/*
+ * Register state pushed on the stack by interrupt.asm.
+ * Layout matches the push order (lowest address = last pushed):
+ *
+ *   [pushed by CPU automatically]   ss, rsp, rflags, cs, rip
+ *   [pushed by isr stub]            err_code, int_no
+ *   [pushed by isr_common_stub]     rax, rbx, rcx, rdx, rsi, rdi, rbp,
+ *                                   r8, r9, r10, r11, r12, r13, r14, r15
+ *
+ * RSP after all pushes points to r15, so r15 is the first struct field.
  */
 typedef struct {
-   uint32_t ds; /* Data segment selector */
-   uint32_t edi, esi, ebp, useless, ebx, edx, ecx, eax; /* Pushed by pusha. */
-   uint32_t int_no, err_code; /* Interrupt number and error code (if applicable) */
-   uint32_t eip, cs, eflags, esp, ss; /* Pushed by the processor automatically */
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t int_no, err_code;
+    /* Pushed automatically by the CPU on interrupt entry */
+    uint64_t rip, cs, rflags, rsp, ss;
 } registers_t;
 
-void isr_install();
+void isr_install(void);
 void isr_handler(registers_t *r);
-void irq_install();
+void irq_install(void);
 
-typedef void (*isr_t)(registers_t*);
+typedef void (*isr_t)(registers_t *);
 void register_interrupt_handler(uint8_t n, isr_t handler);
 
 #endif

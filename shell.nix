@@ -7,7 +7,7 @@ pkgs.mkShell {
     # qemu_full
 	gnumake
 	gdb
-	coreboot-toolchain.i386
+	coreboot-toolchain.x86_64
 	grub2
     libisoburn
 	# kvmtool
