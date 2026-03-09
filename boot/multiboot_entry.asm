@@ -69,10 +69,18 @@ _start:
     add edi, 8
     loop .fill_pd
 
-    ; ── 2. Enable PAE (required for long mode) ──────────────────────────
+    ; ── 2. Enable PAE + SSE (required for long mode / 64-bit GCC) ───────
     mov eax, cr4
     or  eax, (1 << 5)           ; CR4.PAE
+    or  eax, (1 << 9)           ; CR4.OSFXSR  — enable SSE
+    or  eax, (1 << 10)          ; CR4.OSXMMEXCPT — enable SSE exceptions
     mov cr4, eax
+
+    ; Clear CR0.EM (bit 2), set CR0.MP (bit 1) — required for SSE
+    mov eax, cr0
+    and eax, ~(1 << 2)          ; clear EM
+    or  eax, (1 << 1)           ; set MP
+    mov cr0, eax
 
     ; ── 3. Set EFER.LME (long mode enable) ─────────────────────────────
     mov ecx, 0xC0000080         ; EFER MSR address
