@@ -250,6 +250,125 @@ int ata_read_partitions(uint8_t drive_idx, mbr_partition_t parts[4]) {
     return 0;
 }
 
+/* ── GUID helpers ──────────────────────────────────────────────────────── */
+
+int guid_is_zero(const guid_t *g) {
+    return g->data1 == 0 && g->data2 == 0 && g->data3 == 0
+        && g->data4[0] == 0 && g->data4[1] == 0 && g->data4[2] == 0
+        && g->data4[3] == 0 && g->data4[4] == 0 && g->data4[5] == 0
+        && g->data4[6] == 0 && g->data4[7] == 0;
+}
+
+static int guid_eq(const guid_t *a, const guid_t *b) {
+    if (a->data1 != b->data1) return 0;
+    if (a->data2 != b->data2) return 0;
+    if (a->data3 != b->data3) return 0;
+    for (int i = 0; i < 8; i++)
+        if (a->data4[i] != b->data4[i]) return 0;
+    return 1;
+}
+
+/* Well-known GPT partition type GUIDs (stored in mixed-endian per UEFI spec) */
+static const guid_t GUID_EFI_SYSTEM       = {0xC12A7328, 0xF81F, 0x11D2, {0xBA,0x4B,0x00,0xA0,0xC9,0x3E,0xC9,0x3B}};
+static const guid_t GUID_MS_BASIC_DATA    = {0xEBD0A0A2, 0xB9E5, 0x4433, {0x87,0xC0,0x68,0xB6,0xB7,0x26,0x99,0xC7}};
+static const guid_t GUID_LINUX_FS         = {0x0FC63DAF, 0x8483, 0x4772, {0x8E,0x79,0x3D,0x69,0xD8,0x47,0x7D,0xE4}};
+static const guid_t GUID_LINUX_SWAP       = {0x0657FD6D, 0xA4AB, 0x43C4, {0x84,0xE5,0x09,0x33,0xC8,0x4B,0x4F,0x4F}};
+static const guid_t GUID_LINUX_LVM        = {0xE6D6D379, 0xF507, 0x44C2, {0xA2,0x3C,0x23,0x8F,0x2A,0x3D,0xF9,0x28}};
+static const guid_t GUID_MS_RESERVED      = {0xE3C9E316, 0x0B5C, 0x4DB8, {0x81,0x7D,0xF9,0x2D,0xF0,0x02,0x15,0xAE}};
+static const guid_t GUID_BIOS_BOOT        = {0x21686148, 0x6449, 0x6E6F, {0x74,0x4E,0x65,0x65,0x64,0x45,0x46,0x49}};
+
+const char *gpt_type_name(const guid_t *type) {
+    if (guid_is_zero(type))               return "Empty";
+    if (guid_eq(type, &GUID_EFI_SYSTEM))  return "EFI System";
+    if (guid_eq(type, &GUID_MS_BASIC_DATA)) return "Microsoft Basic Data";
+    if (guid_eq(type, &GUID_LINUX_FS))    return "Linux filesystem";
+    if (guid_eq(type, &GUID_LINUX_SWAP))  return "Linux swap";
+    if (guid_eq(type, &GUID_LINUX_LVM))   return "Linux LVM";
+    if (guid_eq(type, &GUID_MS_RESERVED)) return "Microsoft Reserved";
+    if (guid_eq(type, &GUID_BIOS_BOOT))   return "BIOS Boot";
+    return "Unknown";
+}
+
+/* ── Partition scheme detection ───────────────────────────────────────── */
+
+uint8_t ata_detect_scheme(uint8_t drive_idx) {
+    uint8_t mbr[ATA_SECTOR_SIZE];
+    if (ata_read_sectors(drive_idx, 0, 1, mbr) != 0)
+        return PART_SCHEME_NONE;
+
+    /* Check MBR signature */
+    if (mbr[510] != 0x55 || mbr[511] != 0xAA)
+        return PART_SCHEME_NONE;
+
+    /* Check if first partition is GPT protective (type 0xEE) */
+    mbr_partition_t *parts = (mbr_partition_t *)&mbr[446];
+    for (int i = 0; i < 4; i++) {
+        if (parts[i].type == 0xEE)
+            return PART_SCHEME_GPT;
+    }
+
+    return PART_SCHEME_MBR;
+}
+
+/* ── GPT reading ──────────────────────────────────────────────────────── */
+
+int ata_read_gpt(uint8_t drive_idx, gpt_partition_entry_t *entries, int max) {
+    /* Read GPT header at LBA 1 */
+    uint8_t hdr_buf[ATA_SECTOR_SIZE];
+    if (ata_read_sectors(drive_idx, 1, 1, hdr_buf) != 0)
+        return -1;
+
+    gpt_header_t *hdr = (gpt_header_t *)hdr_buf;
+
+    /* Validate signature "EFI PART" */
+    if (hdr->signature[0] != 'E' || hdr->signature[1] != 'F' ||
+        hdr->signature[2] != 'I' || hdr->signature[3] != ' ' ||
+        hdr->signature[4] != 'P' || hdr->signature[5] != 'A' ||
+        hdr->signature[6] != 'R' || hdr->signature[7] != 'T')
+        return -2;
+
+    uint32_t num_entries  = hdr->num_partition_entries;
+    uint32_t entry_size   = hdr->partition_entry_size;
+    uint32_t entry_lba    = (uint32_t)hdr->partition_entry_lba;
+
+    if (entry_size < 128 || entry_size > 512)
+        return -3;  /* unsupported entry size */
+
+    /* Clamp to max */
+    if (num_entries > (uint32_t)max)
+        num_entries = (uint32_t)max;
+
+    /* How many entries fit per sector */
+    uint32_t entries_per_sector = ATA_SECTOR_SIZE / entry_size;
+    int found = 0;
+    uint8_t sec_buf[ATA_SECTOR_SIZE];
+
+    for (uint32_t i = 0; i < num_entries; i++) {
+        uint32_t sec_idx   = i / entries_per_sector;
+        uint32_t sec_off   = (i % entries_per_sector) * entry_size;
+
+        if (sec_off == 0) {
+            /* Read next sector of entries */
+            if (ata_read_sectors(drive_idx, entry_lba + sec_idx, 1, sec_buf) != 0)
+                return -1;
+        }
+
+        gpt_partition_entry_t *pe = (gpt_partition_entry_t *)&sec_buf[sec_off];
+
+        /* Skip empty entries */
+        if (guid_is_zero(&pe->type_guid))
+            continue;
+
+        /* memcpy(source, dest, n) — CoolFrost non-standard order */
+        memcpy((uint8_t *)pe, (uint8_t *)&entries[found], (int)sizeof(gpt_partition_entry_t));
+        found++;
+    }
+
+    return found;
+}
+
+/* ── MBR partition type names ─────────────────────────────────────────── */
+
 const char *partition_type_name(uint8_t type) {
     switch (type) {
         case 0x00: return "Empty";

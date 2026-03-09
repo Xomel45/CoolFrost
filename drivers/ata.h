@@ -61,6 +61,52 @@ typedef struct __attribute__((packed)) {
     uint32_t sector_count;      /* Total sectors in partition  */
 } mbr_partition_t;
 
+/* ── GPT structures ───────────────────────────────────────────────────── */
+
+/* 16-byte GUID stored as raw bytes (mixed-endian per UEFI spec) */
+typedef struct __attribute__((packed)) {
+    uint32_t data1;
+    uint16_t data2;
+    uint16_t data3;
+    uint8_t  data4[8];
+} guid_t;
+
+/* GPT header (LBA 1) — 92 bytes used, rest of 512 is reserved/zero */
+typedef struct __attribute__((packed)) {
+    char     signature[8];          /* "EFI PART"                  */
+    uint32_t revision;              /* usually 0x00010000          */
+    uint32_t header_size;           /* usually 92                  */
+    uint32_t header_crc32;          /* CRC32 of header (0..header_size) */
+    uint32_t reserved;              /* must be zero                */
+    uint64_t current_lba;           /* LBA of this header (1)      */
+    uint64_t backup_lba;            /* LBA of backup header        */
+    uint64_t first_usable_lba;      /* first usable LBA for partitions */
+    uint64_t last_usable_lba;       /* last usable LBA             */
+    guid_t   disk_guid;             /* unique disk GUID            */
+    uint64_t partition_entry_lba;   /* start LBA of partition entries */
+    uint32_t num_partition_entries; /* number of entries (usually 128) */
+    uint32_t partition_entry_size;  /* size of each entry (usually 128) */
+    uint32_t partition_entries_crc32;
+} gpt_header_t;
+
+/* GPT partition entry — 128 bytes */
+typedef struct __attribute__((packed)) {
+    guid_t   type_guid;             /* partition type GUID         */
+    guid_t   unique_guid;           /* unique partition GUID       */
+    uint64_t first_lba;             /* starting LBA                */
+    uint64_t last_lba;              /* ending LBA (inclusive)      */
+    uint64_t attributes;            /* bit flags                   */
+    uint16_t name[36];              /* UTF-16LE name (72 bytes)    */
+} gpt_partition_entry_t;
+
+/* Max GPT partitions we read (enough for typical disks) */
+#define MAX_GPT_PARTS   32
+
+/* Partition scheme detection */
+#define PART_SCHEME_NONE  0
+#define PART_SCHEME_MBR   1
+#define PART_SCHEME_GPT   2
+
 /* ── Drive info (populated by IDENTIFY) ────────────────────────────────── */
 typedef struct {
     uint8_t  present;           /* 1 = drive detected          */
@@ -96,5 +142,18 @@ int ata_read_partitions(uint8_t drive_idx, mbr_partition_t parts[4]);
 
 /* Human-readable name for a partition type byte */
 const char *partition_type_name(uint8_t type);
+
+/* Detect partition scheme on a drive (PART_SCHEME_MBR or PART_SCHEME_GPT) */
+uint8_t ata_detect_scheme(uint8_t drive_idx);
+
+/* Read GPT partition table.  Returns number of valid entries found (0..max),
+ * or negative on error.  `entries` must hold at least `max` entries. */
+int ata_read_gpt(uint8_t drive_idx, gpt_partition_entry_t *entries, int max);
+
+/* Human-readable name for a GPT partition type GUID */
+const char *gpt_type_name(const guid_t *type);
+
+/* Check if a GUID is all zeros (empty partition entry) */
+int guid_is_zero(const guid_t *g);
 
 #endif

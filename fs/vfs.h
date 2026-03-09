@@ -121,6 +121,8 @@ int       vfs_finddir(const char *path, dirent_t *out);
 
 /* Mount operations */
 int       vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path);
+int       vfs_mount_gpt(uint8_t drive, uint32_t lba_start, uint32_t sector_count,
+                        const char *mount_path);
 int       vfs_umount(const char *mount_path);
 
 /* Query */

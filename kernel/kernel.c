@@ -13,6 +13,9 @@
 #include "multiboot.h"
 #include "../power/powerctl.h"
 #include "../drivers/pci.h"
+#include "../drivers/ata.h"
+#include "../fs/vfs.h"
+#include "../fs/fat32.h"
 
 #include <stdint.h>
 
@@ -20,6 +23,17 @@ char *buffer;
 static kernel_globals globals;
 static uint16_t *pci_devs;
 static uint16_t total_devs = 0;
+static uint8_t  cat_buf[512];
+
+/* Check if `str` starts with `prefix` */
+static int starts_with(const char *str, const char *prefix) {
+    while (*prefix) {
+        if (*str != *prefix) return 0;
+        str++;
+        prefix++;
+    }
+    return 1;
+}
 
 void perform_tests() {
     kprint_attr("Test 1:\n", GREEN_FG);
@@ -66,9 +80,13 @@ void kstart(uintptr_t addr) {
         memset((uint8_t *)globals.cpu_manufacturer, 0, 13);
         memset((uint8_t *)globals.cpu_full_name, 0, 49);
     }
-    globals.kernel_name = "FrostOS";
+    globals.kernel_name = "CoolFrost";
     globals.kernel_version = "0.1A";
     globals.kernel_codename = "Dark Rain";
+
+    /* Init ATA and VFS */
+    ata_init();
+    vfs_init();
 
     perform_tests();
 }
@@ -97,6 +115,53 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             globals.kernel_name,
             globals.kernel_version);
     pci_scan_devs();
+
+    /* Auto-mount first suitable partition at /hda1 */
+    if (ata_drive_count() > 0) {
+        uint8_t scheme = ata_detect_scheme(0);
+        int mounted = 0;
+
+        if (scheme == PART_SCHEME_GPT) {
+            gpt_partition_entry_t gparts[MAX_GPT_PARTS];
+            int gn = ata_read_gpt(0, gparts, MAX_GPT_PARTS);
+            for (int p = 0; p < gn && !mounted; p++) {
+                uint32_t lba   = (uint32_t)gparts[p].first_lba;
+                uint32_t count = (uint32_t)(gparts[p].last_lba - gparts[p].first_lba + 1);
+                if (vfs_mount_gpt(0, lba, count, "/hda1") == 0) {
+                    printf("Mounted GPT partition %d at /hda1\n", p);
+                    mounted = 1;
+                }
+            }
+        } else if (scheme == PART_SCHEME_MBR) {
+            mbr_partition_t parts[4];
+            if (ata_read_partitions(0, parts) == 0) {
+                for (int p = 0; p < 4 && !mounted; p++) {
+                    if (parts[p].type == 0x0B || parts[p].type == 0x0C) {
+                        if (vfs_mount(0, p, "/hda1") == 0) {
+                            printf("Mounted MBR partition %d at /hda1\n", p);
+                            mounted = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (mounted) {
+            int fd = vfs_open("/hda1", 0);
+            if (fd >= 0) {
+                kprint("Files on /hda1:\n");
+                for (uint32_t i = 0; ; i++) {
+                    dirent_t *de = vfs_readdir(fd, i);
+                    if (!de) break;
+                    if (de->type == VFS_DIRECTORY)
+                        printf("  [DIR]  %s\n", de->name);
+                    else
+                        printf("  %s  (%u bytes)\n", de->name, de->size);
+                }
+                vfs_close(fd);
+            }
+        }
+    }
 
     while (1) {
         kprint("\n> ");
@@ -134,8 +199,85 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             speaker_beep();
         } else if (strcmp(buffer, "clear") == 0) {
             clear_screen();
+        } else if (strcmp(buffer, "ls") == 0) {
+            int fd = vfs_open("/hda1", 0);
+            if (fd < 0) {
+                kprint_attr("No mounted filesystem\n", RED_FG);
+            } else {
+                for (uint32_t i = 0; ; i++) {
+                    dirent_t *de = vfs_readdir(fd, i);
+                    if (!de) break;
+                    if (de->type == VFS_DIRECTORY)
+                        printf("  [DIR]  %s\n", de->name);
+                    else
+                        printf("  %s  (%u bytes)\n", de->name, de->size);
+                }
+                vfs_close(fd);
+            }
+        } else if (starts_with(buffer, "cat ")) {
+            const char *fname = buffer + 4;
+            /* Skip leading spaces */
+            while (*fname == ' ') fname++;
+            if (!*fname) {
+                kprint_attr("Usage: cat <filename>\n", RED_FG);
+            } else {
+                int fd = vfs_open(fname, 0);
+                if (fd < 0) {
+                    kprint_attr("File not found: ", RED_FG);
+                    kprint((char *)fname);
+                    kprint("\n");
+                } else {
+                    int n;
+                    while ((n = vfs_read(fd, cat_buf, 511)) > 0) {
+                        cat_buf[n] = '\0';
+                        kprint((char *)cat_buf);
+                    }
+                    kprint("\n");
+                    vfs_close(fd);
+                }
+            }
+        } else if (strcmp(buffer, "lsblk") == 0) {
+            uint8_t count = ata_drive_count();
+            if (count == 0) {
+                kprint("No ATA drives detected\n");
+            } else {
+                for (uint8_t i = 0; i < count; i++) {
+                    ata_drive_t *drv = ata_get_drive(i);
+                    if (!drv || !drv->present) continue;
+                    uint32_t mb = drv->sectors / 2048;
+
+                    uint8_t scheme = ata_detect_scheme(i);
+                    const char *scheme_name = (scheme == PART_SCHEME_GPT) ? "GPT" :
+                                              (scheme == PART_SCHEME_MBR) ? "MBR" : "???";
+                    printf("ata%d: %s  %u MB  [%s]\n", i, drv->model, mb, scheme_name);
+
+                    if (scheme == PART_SCHEME_GPT) {
+                        gpt_partition_entry_t gparts[MAX_GPT_PARTS];
+                        int gn = ata_read_gpt(i, gparts, MAX_GPT_PARTS);
+                        for (int p = 0; p < gn; p++) {
+                            uint32_t lba = (uint32_t)gparts[p].first_lba;
+                            uint32_t secs = (uint32_t)(gparts[p].last_lba - gparts[p].first_lba + 1);
+                            uint32_t pmb = secs / 2048;
+                            printf("  p%d: %s  LBA %u  %u MB\n",
+                                    p, gpt_type_name(&gparts[p].type_guid),
+                                    lba, pmb);
+                        }
+                    } else if (scheme == PART_SCHEME_MBR) {
+                        mbr_partition_t parts[4];
+                        if (ata_read_partitions(i, parts) == 0) {
+                            for (int p = 0; p < 4; p++) {
+                                if (parts[p].type == 0x00) continue;
+                                uint32_t pmb = parts[p].sector_count / 2048;
+                                printf("  p%d: %s  LBA %u  %u MB\n",
+                                        p, partition_type_name(parts[p].type),
+                                        parts[p].lba_start, pmb);
+                            }
+                        }
+                    }
+                }
+            }
         } else if (strcmp(buffer, "help") == 0) {
-            kprint_attr("FrostOS Help:\n"
+            kprint_attr("CoolFrost Help:\n"
                         "====================\n"
                         "time - write current time to the screen\n"
                         "date - write current date to the screen\n"
@@ -146,9 +288,12 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "reboot - reboot the system\n"
                         "help - write out this help\n"
                         "clock - a nice clock\n"
-                        "charmap - a nice table of all characters of 437 Code Page\n"
-                        "pciinfo - a nice list of all pci devices installed on system\n"
-                        "spkctl - a nice controller of the PC speaker\n", GREEN_FG);
+                        "charmap - character map of 437 Code Page\n"
+                        "pciinfo - list of PCI devices\n"
+                        "spkctl - PC speaker controller\n"
+                        "ls - list files on mounted disk\n"
+                        "cat <file> - show file contents\n"
+                        "lsblk - list ATA drives and partitions\n", GREEN_FG);
         } else if (strcmp(buffer, "reboot") == 0) {
             reboot();
         } else if (strcmp(buffer, "charmap") == 0) {
