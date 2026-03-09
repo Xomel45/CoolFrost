@@ -1,5 +1,5 @@
-C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c)
-HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h)
+C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c fs/*.c)
+HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h fs/*.h)
 OBJ       = ${C_SOURCES:.c=.o} cpu/interrupt.o drivers/cpuid-detect.o
 
 CC     = gcc
