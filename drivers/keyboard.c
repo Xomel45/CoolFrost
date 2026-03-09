@@ -62,16 +62,20 @@ void getline(char *to, char echo, uint32_t max_len) {
     while (1) {
         key = keyboard_receive_key(1);
         if (key == '\n') break;
-        if (key == '\0') {
-        	continue;
-        } // ignore
+        if (key == '\0') continue;
+
+        if (key == '\b') {
+            /* Only allow backspace if there's something to erase */
+            if (to > start) {
+                to--;
+                if (echo)
+                    kprint_backspace();
+            }
+            continue;
+        }
 
         if ((uint32_t)(to - start) < max_len - 1) {
             *to++ = key;
-            if (key == '\b') {
-            	*to--;
-            	*to--;
-            }
             if (echo) {
                 temp[0] = key;
                 temp[1] = '\0';

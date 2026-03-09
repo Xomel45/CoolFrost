@@ -21,11 +21,13 @@
 
 #include <stdint.h>
 
-char *buffer;
+static char     cmd_buf[512];        /* static shell input buffer   */
 static kernel_globals globals;
-static uint16_t *pci_devs;
+static uint16_t pci_devs_buf[8192];  /* static PCI device list      */
+static uint16_t *pci_devs = pci_devs_buf;
 static uint16_t total_devs = 0;
 static uint8_t  cat_buf[512];
+static gpt_partition_entry_t gpt_parts_buf[MAX_GPT_PARTS]; /* avoid stack */
 
 /* Check if `str` starts with `prefix` */
 static int starts_with(const char *str, const char *prefix) {
@@ -102,17 +104,12 @@ void pci_scan_devs() {
 }
 
 void kernel_main(uintptr_t magic, uintptr_t addr) {
+    (void)magic;
     kstart(addr);
     sleep_ms(5000);
     clear_screen();
 
-    KHEAPBM kheap;
-    k_heapBMInit(&kheap);
-    k_heapBMAddBlock(&kheap, (void *)0x800000, 0x100000, 16);
-    buffer = (char *)k_heapBMAlloc(&kheap, 512);
-    // TODO: FIX HEAP ALLOCATION
-    pci_devs = (uint16_t *)(uintptr_t)0x900000; // Works but should use a heap allocator
-    memset(pci_devs, 0, sizeof(uint16_t) * 256);
+    memset(pci_devs, 0, sizeof(pci_devs_buf));
     printf("%s %s\n",
             globals.kernel_name,
             globals.kernel_version);
@@ -124,7 +121,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
         int mounted = 0;
 
         if (scheme == PART_SCHEME_GPT) {
-            gpt_partition_entry_t gparts[MAX_GPT_PARTS];
+            gpt_partition_entry_t *gparts = gpt_parts_buf;
             int gn = ata_read_gpt(0, gparts, MAX_GPT_PARTS);
             for (int p = 0; p < gn && !mounted; p++) {
                 uint32_t lba   = (uint32_t)gparts[p].first_lba;
@@ -170,25 +167,25 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
 
     while (1) {
         kprint("\n> ");
-        memset((uint8_t *)buffer, 0, 512);
-        getline(buffer, 1, 512);
+        memset((uint8_t *)cmd_buf, 0, sizeof(cmd_buf));
+        getline(cmd_buf, 1, sizeof(cmd_buf));
         kprint("\n");
 
-        if (strcmp(buffer, "time") == 0) {
+        if (strcmp(cmd_buf, "time") == 0) {
             printf("%u:%u:%u\n",
                     globals.datetime.hours,
                     globals.datetime.minutes,
                     globals.datetime.seconds);
-        } else if (strcmp(buffer, "date") == 0) {
+        } else if (strcmp(cmd_buf, "date") == 0) {
             printf("%u.%u.%u\n",
                     globals.datetime.day,
                     globals.datetime.month,
                     globals.datetime.year);
-        } else if (strcmp(buffer, "halt") == 0) {
+        } else if (strcmp(cmd_buf, "halt") == 0) {
             clear_screen();
             kprint("System halted.");
             halt();
-        } else if (strcmp(buffer, "sysinfo") == 0) {
+        } else if (strcmp(cmd_buf, "sysinfo") == 0) {
             kprint("System info:\n");
             printf("OS: %s\nVersion: %s\nCodename: %s\n",
                     globals.kernel_name,
@@ -200,11 +197,11 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 kprint_attr(&y, x << 4);
             }
             kprint("\n");
-        } else if (strcmp(buffer, "beep") == 0) {
+        } else if (strcmp(cmd_buf, "beep") == 0) {
             speaker_beep();
-        } else if (strcmp(buffer, "clear") == 0) {
+        } else if (strcmp(cmd_buf, "clear") == 0) {
             clear_screen();
-        } else if (strcmp(buffer, "ls") == 0) {
+        } else if (strcmp(cmd_buf, "ls") == 0) {
             int fd = vfs_open("/hda1", 0);
             if (fd < 0) {
                 kprint_attr("No mounted filesystem\n", RED_FG);
@@ -219,8 +216,8 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 }
                 vfs_close(fd);
             }
-        } else if (starts_with(buffer, "cat ")) {
-            const char *fname = buffer + 4;
+        } else if (starts_with(cmd_buf, "cat ")) {
+            const char *fname = cmd_buf + 4;
             /* Skip leading spaces */
             while (*fname == ' ') fname++;
             if (!*fname) {
@@ -241,7 +238,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     vfs_close(fd);
                 }
             }
-        } else if (strcmp(buffer, "lsblk") == 0) {
+        } else if (strcmp(cmd_buf, "lsblk") == 0) {
             uint8_t count = ata_drive_count();
             if (count == 0) {
                 kprint("No ATA drives detected\n");
@@ -257,7 +254,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     printf("ata%d: %s  %u MB  [%s]\n", i, drv->model, mb, scheme_name);
 
                     if (scheme == PART_SCHEME_GPT) {
-                        gpt_partition_entry_t gparts[MAX_GPT_PARTS];
+                        gpt_partition_entry_t *gparts = gpt_parts_buf;
                         int gn = ata_read_gpt(i, gparts, MAX_GPT_PARTS);
                         for (int p = 0; p < gn; p++) {
                             uint32_t lba = (uint32_t)gparts[p].first_lba;
@@ -281,7 +278,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     }
                 }
             }
-        } else if (strcmp(buffer, "help") == 0) {
+        } else if (strcmp(cmd_buf, "help") == 0) {
             kprint_attr("CoolFrost Help:\n"
                         "====================\n"
                         "time - write current time to the screen\n"
@@ -299,9 +296,9 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "ls - list files on mounted disk\n"
                         "cat <file> - show file contents\n"
                         "lsblk - list ATA drives and partitions\n", GREEN_FG);
-        } else if (strcmp(buffer, "reboot") == 0) {
+        } else if (strcmp(cmd_buf, "reboot") == 0) {
             reboot();
-        } else if (strcmp(buffer, "charmap") == 0) {
+        } else if (strcmp(cmd_buf, "charmap") == 0) {
             uint8_t cur_char = 1;
             uint8_t scancode = 0;
             clear_screen();
@@ -344,7 +341,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 }
                 scancode = 0;
             }
-        } else if (strcmp(buffer, "pciinfo") == 0) {
+        } else if (strcmp(cmd_buf, "pciinfo") == 0) {
             uint8_t scancode;
             uint16_t cur_index = 0;
             clear_screen();
@@ -447,7 +444,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 }
                 scancode = 0;
             }
-        } else if (strcmp(buffer, "clock") == 0) {
+        } else if (strcmp(cmd_buf, "clock") == 0) {
             uint8_t scancode = 0;
             while (1) {
                 clear_screen();
@@ -478,7 +475,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 sleep_ms(100);
                 if ((scancode = get_cur_scancode()) == 0x01) break;
             }
-        } else if (strcmp(buffer, "spkctl") == 0) {
+        } else if (strcmp(cmd_buf, "spkctl") == 0) {
             uint8_t scancode = 0;
             while (1) {
                 clear_screen();
@@ -538,7 +535,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             }
         } else {
             kprint_attr("Unknown command: ", RED_FG);
-            kprint_attr(buffer, RED_FG);
+            kprint_attr(cmd_buf, RED_FG);
             kprint("\n");
         }
     }
