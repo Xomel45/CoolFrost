@@ -16,6 +16,8 @@
 #include "../drivers/ata.h"
 #include "../fs/vfs.h"
 #include "../fs/fat32.h"
+#include "../fs/ext2.h"
+#include "../fs/ntfs.h"
 
 #include <stdint.h>
 
@@ -136,7 +138,10 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             mbr_partition_t parts[4];
             if (ata_read_partitions(0, parts) == 0) {
                 for (int p = 0; p < 4 && !mounted; p++) {
-                    if (parts[p].type == 0x0B || parts[p].type == 0x0C) {
+                    uint8_t pt = parts[p].type;
+                    /* FAT32, FAT32-LBA, Linux (ext2/3/4), NTFS */
+                    if (pt == 0x0B || pt == 0x0C ||
+                        pt == 0x83 || pt == 0x07) {
                         if (vfs_mount(0, p, "/hda1") == 0) {
                             printf("Mounted MBR partition %d at /hda1\n", p);
                             mounted = 1;

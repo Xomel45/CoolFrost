@@ -1,5 +1,7 @@
 #include "vfs.h"
 #include "fat32.h"
+#include "ext2.h"
+#include "ntfs.h"
 #include "../drivers/ata.h"
 #include "../libc/mem.h"
 
@@ -146,6 +148,18 @@ int vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path) {
                            &mount_table[slot]);
     }
 
+    if (ptype == 0x83) {
+        /* Linux — try ext2/3/4 */
+        return ext2_mount(drive, parts[partition].lba_start,
+                          &mount_table[slot]);
+    }
+
+    if (ptype == 0x07) {
+        /* NTFS / HPFS — try NTFS */
+        return ntfs_mount(drive, parts[partition].lba_start,
+                          &mount_table[slot]);
+    }
+
     /* Unsupported FS */
     mount_table[slot].active = 0;
     return -4;
@@ -186,6 +200,21 @@ int vfs_mount_gpt(uint8_t drive, uint32_t lba_start, uint32_t sector_count,
     if (bps == 512 && rec == 0 && fs16 == 0) {
         /* Likely FAT32 */
         return fat32_mount(drive, lba_start, &mount_table[slot]);
+    }
+
+    /* Try NTFS: OEM ID "NTFS" at offset 3 */
+    if (boot[3] == 'N' && boot[4] == 'T' &&
+        boot[5] == 'F' && boot[6] == 'S') {
+        return ntfs_mount(drive, lba_start, &mount_table[slot]);
+    }
+
+    /* Try ext2/3/4: superblock at byte 1024 (LBA+2), magic at offset 56 */
+    uint8_t sb_check[512];
+    if (ata_read_sectors(drive, lba_start + 2, 1, sb_check) == 0) {
+        uint16_t ext_magic = *(uint16_t *)&sb_check[56];
+        if (ext_magic == 0xEF53) {
+            return ext2_mount(drive, lba_start, &mount_table[slot]);
+        }
     }
 
     /* Unsupported FS */

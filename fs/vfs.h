@@ -26,6 +26,8 @@
 #define FS_NONE         0
 #define FS_FAT16        1
 #define FS_FAT32        2
+#define FS_EXT2         3
+#define FS_NTFS         4
 
 /* ── Directory entry (returned by readdir) ─────────────────────────────── */
 typedef struct {
