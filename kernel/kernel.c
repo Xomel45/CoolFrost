@@ -13,6 +13,7 @@
 #include "multiboot.h"
 #include "../power/powerctl.h"
 #include "../drivers/pci.h"
+#include "../drivers/gpu.h"
 #include "../drivers/ata.h"
 #include "../fs/vfs.h"
 #include "../fs/fat32.h"
@@ -22,6 +23,7 @@
 #include <stdint.h>
 
 static char     cmd_buf[512];        /* static shell input buffer   */
+static gpu_info_t gpu_list[MAX_GPUS];
 static kernel_globals globals;
 static uint16_t pci_devs_buf[8192];  /* static PCI device list      */
 static uint16_t *pci_devs = pci_devs_buf;
@@ -363,6 +365,34 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                        "Approximate round trip times in milli-seconds:\n"
                        "  Minimum = 1ms, Maximum = 3ms, Average = 1ms\n");
             }
+        } else if (strcmp(cmd_buf, "gpuinfo") == 0) {
+            int n = gpu_scan(gpu_list, MAX_GPUS);
+            if (n == 0) {
+                kprint("No display controllers found\n");
+            } else {
+                for (int i = 0; i < n; i++) {
+                    gpu_info_t *g = &gpu_list[i];
+                    printf("GPU %d: %s (0x%X) — %s\n",
+                           i, g->vendor_name, g->device_id, g->type_name);
+                    printf("  Bus %u Slot %u  VendorID: 0x%X\n",
+                           g->bus, g->slot, g->vendor_id);
+                    if (g->bar0_size > 0)
+                        printf("  BAR0: 0x%lX  size: %lu MB\n",
+                               g->bar0_base, g->bar0_size / (1024 * 1024));
+                    else if (g->bar0_base)
+                        printf("  BAR0: 0x%lX  (I/O or size unknown)\n",
+                               g->bar0_base);
+                    if (g->is_pcie) {
+                        if (g->pcie_gen && g->pcie_width)
+                            printf("  PCIe Gen%u x%u\n",
+                                   g->pcie_gen, g->pcie_width);
+                        else
+                            kprint("  PCIe (link info unavailable)\n");
+                    } else {
+                        kprint("  PCI (no PCIe capability)\n");
+                    }
+                }
+            }
         } else if (strcmp(cmd_buf, "help") == 0) {
             kprint_attr("CoolFrost Help:\n"
                         "====================\n"
@@ -377,6 +407,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "clock - a nice clock\n"
                         "charmap - character map of 437 Code Page\n"
                         "pciinfo - list of PCI devices\n"
+                        "gpuinfo - show GPU/display controller info\n"
                         "spkctl - PC speaker controller\n"
                         "ls - list files on mounted disk\n"
                         "cat <file> - show file contents\n"

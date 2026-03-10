@@ -125,6 +125,7 @@ typedef struct __attribute__((packed)) {
 
 uint16_t pci_config_read_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 uint32_t pci_config_read_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+void     pci_config_write_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
 uint16_t pci_get_vendor(uint8_t bus, uint8_t slot);
 uint16_t pci_get_device(uint8_t bus, uint8_t slot);
 uint8_t pci_get_class_code(uint8_t bus, uint8_t slot);
@@ -132,4 +133,8 @@ uint8_t pci_get_subclass(uint8_t bus, uint8_t slot);
 uint8_t pci_get_progif(uint8_t bus, uint8_t slot);
 uint8_t pci_get_revision(uint8_t bus, uint8_t slot);
 pci_base_device_header_t pci_get_base_device_header(uint8_t bus, uint8_t slot);
+
+/* Returns the config-space offset of capability `cap_id`, or 0 if not found.
+ * Only works for header type 0 devices that advertise a capabilities list. */
+uint8_t pci_find_cap(uint8_t bus, uint8_t slot, uint8_t func, uint8_t cap_id);
 #endif

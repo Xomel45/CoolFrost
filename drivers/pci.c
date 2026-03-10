@@ -68,6 +68,37 @@ uint8_t pci_get_revision(uint8_t bus, uint8_t slot) {
     return (uint8_t)(pci_config_read_word(bus, slot, 0, 8) & 0xFF);
 }
 
+void pci_config_write_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value) {
+    uint32_t address = (1u << 31)
+                     | ((uint32_t)bus  << 16)
+                     | ((uint32_t)slot << 11)
+                     | ((uint32_t)func <<  8)
+                     | (offset & 0xFC);
+    port_dword_out(0xCF8, address);
+    port_dword_out(0xCFC, value);
+}
+
+uint8_t pci_find_cap(uint8_t bus, uint8_t slot, uint8_t func, uint8_t cap_id) {
+    /* Check capabilities list bit in status register (offset 0x06, bit 4) */
+    uint16_t status = pci_config_read_word(bus, slot, func, 0x06);
+    if (!(status & (1 << 4))) return 0;
+
+    /* Capabilities pointer is at offset 0x34 (bits [7:0]) */
+    uint8_t cap_ptr = (uint8_t)(pci_config_read_dword(bus, slot, func, 0x34) & 0xFF);
+    cap_ptr &= 0xFC; /* align to dword */
+
+    uint8_t visited = 0;
+    while (cap_ptr && visited < 48) {
+        uint32_t cap_dw = pci_config_read_dword(bus, slot, func, cap_ptr);
+        uint8_t  id     = (uint8_t)(cap_dw & 0xFF);
+        uint8_t  next   = (uint8_t)((cap_dw >> 8) & 0xFF);
+        if (id == cap_id) return cap_ptr;
+        cap_ptr = next & 0xFC;
+        visited++;
+    }
+    return 0;
+}
+
 pci_base_device_header_t pci_get_base_device_header(uint8_t bus, uint8_t slot) {
     if (pci_get_vendor(bus, slot) == 0xFFFF)
         return (pci_base_device_header_t){.vendor = 0xFFFF};
