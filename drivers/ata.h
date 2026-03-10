@@ -111,7 +111,7 @@ typedef struct __attribute__((packed)) {
 typedef struct {
     uint8_t  present;           /* 1 = drive detected          */
     char     model[41];         /* Model string (null-term)    */
-    uint32_t sectors;           /* Total 28-bit LBA sectors    */
+    uint64_t sectors;           /* Total LBA sectors (48-bit)  */
     uint16_t io_base;           /* I/O base port               */
     uint16_t ctrl_base;         /* Control base port           */
     uint8_t  is_slave;          /* 0 = master, 1 = slave       */
@@ -124,11 +124,11 @@ void ata_init(void);
 
 /* Read `count` sectors starting at `lba` from drive `drive_idx` into `buffer`.
  * Returns 0 on success, negative on error. */
-int ata_read_sectors(uint8_t drive_idx, uint32_t lba, uint8_t count, void *buffer);
+int ata_read_sectors(uint8_t drive_idx, uint64_t lba, uint8_t count, void *buffer);
 
 /* Write `count` sectors starting at `lba` from `buffer` to drive `drive_idx`.
  * Returns 0 on success, negative on error. */
-int ata_write_sectors(uint8_t drive_idx, uint32_t lba, uint8_t count, const void *buffer);
+int ata_write_sectors(uint8_t drive_idx, uint64_t lba, uint8_t count, const void *buffer);
 
 /* Get drive info struct (or NULL if index out of range) */
 ata_drive_t *ata_get_drive(uint8_t index);

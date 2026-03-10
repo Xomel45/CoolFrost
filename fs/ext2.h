@@ -115,7 +115,7 @@ typedef struct __attribute__((packed)) {
 /* ── Internal mounted state ───────────────────────────────────────────── */
 typedef struct {
     uint8_t  drive;
-    uint32_t part_lba;
+    uint64_t part_lba;
     uint32_t block_size;
     uint32_t sectors_per_block;
     uint32_t inodes_per_group;
@@ -126,10 +126,10 @@ typedef struct {
 } ext2_fs_t;
 
 /* ── Public API ───────────────────────────────────────────────────────── */
-int         ext2_mount(uint8_t drive, uint32_t part_lba, mount_point_t *mp);
+int         ext2_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp);
 dirent_t   *ext2_readdir(vfs_node_t *node, uint32_t index);
 vfs_node_t *ext2_finddir(vfs_node_t *node, const char *name);
-int         ext2_read(vfs_node_t *node, uint32_t offset, uint32_t size,
+int         ext2_read(vfs_node_t *node, uint64_t offset, uint32_t size,
                       void *buffer);
 
 #endif

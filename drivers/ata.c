@@ -94,8 +94,15 @@ static void ata_identify_drive(uint16_t io, uint16_t ctrl, uint8_t is_slave) {
     drv->ctrl_base = ctrl;
     drv->is_slave  = is_slave;
 
-    /* Total 28-bit LBA sectors: words 60-61 (little-endian dword) */
-    drv->sectors = (uint32_t)identify[60] | ((uint32_t)identify[61] << 16);
+    /* 28-bit LBA sector count: words 60-61 */
+    drv->sectors = (uint64_t)identify[60] | ((uint64_t)identify[61] << 16);
+    /* 48-bit LBA sector count: words 100-103 (if supported) */
+    if (identify[83] & (1 << 10)) {
+        drv->sectors = (uint64_t)identify[100]
+                     | ((uint64_t)identify[101] << 16)
+                     | ((uint64_t)identify[102] << 32)
+                     | ((uint64_t)identify[103] << 48);
+    }
 
     /* Model string: words 27-46, bytes are swapped in each word */
     for (int i = 0; i < 20; i++) {
@@ -129,13 +136,17 @@ void ata_init(void) {
 
     for (uint8_t i = 0; i < num_drives; i++) {
         ata_drive_t *d = &drives[i];
-        uint32_t mb = d->sectors / 2048; /* sectors × 512 / 1048576 */
-        printf("ata%d: %s  %u MB  (%u sectors)\n",
+        uint64_t mb = d->sectors / 2048; /* sectors × 512 / 1048576 */
+        printf("ata%d: %s  %lu MB  (%lu sectors)\n",
                 i, d->model, mb, d->sectors);
     }
 }
 
-int ata_read_sectors(uint8_t drive_idx, uint32_t lba, uint8_t count, void *buffer) {
+/* ATA command constants for 48-bit LBA */
+#define ATA_CMD_READ_PIO_EXT    0x24
+#define ATA_CMD_WRITE_PIO_EXT   0x34
+
+int ata_read_sectors(uint8_t drive_idx, uint64_t lba, uint8_t count, void *buffer) {
     if (drive_idx >= num_drives)      return -1;
     if (!drives[drive_idx].present)   return -1;
     if (count == 0)                   return -1;
@@ -145,42 +156,48 @@ int ata_read_sectors(uint8_t drive_idx, uint32_t lba, uint8_t count, void *buffe
     uint16_t ctrl = drv->ctrl_base;
     uint8_t  slave_bit = drv->is_slave ? 0x10 : 0x00;
 
-    /* Wait for drive ready */
     if (ata_wait_bsy(io) != 0) return -1;
 
-    /* Select drive, LBA mode, top 4 bits of 28-bit LBA */
-    port_byte_out(io + ATA_REG_DRIVE,
-                  0xE0 | slave_bit | ((lba >> 24) & 0x0F));
-    ata_io_delay(ctrl);
+    if (lba >= 0x10000000ULL) {
+        /* 48-bit LBA (READ SECTORS EXT) */
+        port_byte_out(io + ATA_REG_DRIVE, 0x40 | slave_bit);
+        ata_io_delay(ctrl);
+        /* Write high bytes first ("Previous" content of registers) */
+        port_byte_out(io + ATA_REG_SECCOUNT, 0);                          /* count high  */
+        port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)((lba >> 24) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 32) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 40) & 0xFF));
+        /* Write low bytes ("Current" content of registers) */
+        port_byte_out(io + ATA_REG_SECCOUNT, count);
+        port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)(lba & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
+        port_byte_out(io + ATA_REG_COMMAND, ATA_CMD_READ_PIO_EXT);
+    } else {
+        /* 28-bit LBA (READ SECTORS) */
+        port_byte_out(io + ATA_REG_DRIVE,
+                      0xE0 | slave_bit | ((lba >> 24) & 0x0F));
+        ata_io_delay(ctrl);
+        port_byte_out(io + ATA_REG_SECCOUNT, count);
+        port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)(lba & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
+        port_byte_out(io + ATA_REG_COMMAND, ATA_CMD_READ_PIO);
+    }
 
-    /* Sector count */
-    port_byte_out(io + ATA_REG_SECCOUNT, count);
-
-    /* LBA bytes */
-    port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)(lba & 0xFF));
-    port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
-    port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
-
-    /* Send READ command */
-    port_byte_out(io + ATA_REG_COMMAND, ATA_CMD_READ_PIO);
-
-    /* Read each sector */
     uint16_t *buf = (uint16_t *)buffer;
     for (uint8_t s = 0; s < count; s++) {
         if (ata_wait_drq(io) != 0)
             return -1;
-
         for (int w = 0; w < 256; w++)
             buf[s * 256 + w] = port_word_in(io + ATA_REG_DATA);
-
-        /* 400ns delay between sectors */
         ata_io_delay(ctrl);
     }
 
     return 0;
 }
 
-int ata_write_sectors(uint8_t drive_idx, uint32_t lba, uint8_t count, const void *buffer) {
+int ata_write_sectors(uint8_t drive_idx, uint64_t lba, uint8_t count, const void *buffer) {
     if (drive_idx >= num_drives)      return -1;
     if (!drives[drive_idx].present)   return -1;
     if (count == 0)                   return -1;
@@ -192,17 +209,30 @@ int ata_write_sectors(uint8_t drive_idx, uint32_t lba, uint8_t count, const void
 
     if (ata_wait_bsy(io) != 0) return -1;
 
-    port_byte_out(io + ATA_REG_DRIVE,
-                  0xE0 | slave_bit | ((lba >> 24) & 0x0F));
-    ata_io_delay(ctrl);
-
-    port_byte_out(io + ATA_REG_SECCOUNT, count);
-    port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)(lba & 0xFF));
-    port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
-    port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
-
-    /* Send WRITE command */
-    port_byte_out(io + ATA_REG_COMMAND, ATA_CMD_WRITE_PIO);
+    if (lba >= 0x10000000ULL) {
+        /* 48-bit LBA (WRITE SECTORS EXT) */
+        port_byte_out(io + ATA_REG_DRIVE, 0x40 | slave_bit);
+        ata_io_delay(ctrl);
+        port_byte_out(io + ATA_REG_SECCOUNT, 0);
+        port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)((lba >> 24) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 32) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 40) & 0xFF));
+        port_byte_out(io + ATA_REG_SECCOUNT, count);
+        port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)(lba & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
+        port_byte_out(io + ATA_REG_COMMAND, ATA_CMD_WRITE_PIO_EXT);
+    } else {
+        /* 28-bit LBA (WRITE SECTORS) */
+        port_byte_out(io + ATA_REG_DRIVE,
+                      0xE0 | slave_bit | ((lba >> 24) & 0x0F));
+        ata_io_delay(ctrl);
+        port_byte_out(io + ATA_REG_SECCOUNT, count);
+        port_byte_out(io + ATA_REG_LBA_LO,  (uint8_t)(lba & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+        port_byte_out(io + ATA_REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
+        port_byte_out(io + ATA_REG_COMMAND, ATA_CMD_WRITE_PIO);
+    }
 
     const uint16_t *buf = (const uint16_t *)buffer;
     for (uint8_t s = 0; s < count; s++) {
@@ -329,7 +359,7 @@ int ata_read_gpt(uint8_t drive_idx, gpt_partition_entry_t *entries, int max) {
 
     uint32_t num_entries  = hdr->num_partition_entries;
     uint32_t entry_size   = hdr->partition_entry_size;
-    uint32_t entry_lba    = (uint32_t)hdr->partition_entry_lba;
+    uint64_t entry_lba    = hdr->partition_entry_lba;
 
     if (entry_size < 128 || entry_size > 512)
         return -3;  /* unsupported entry size */
@@ -344,7 +374,7 @@ int ata_read_gpt(uint8_t drive_idx, gpt_partition_entry_t *entries, int max) {
     uint8_t sec_buf[ATA_SECTOR_SIZE];
 
     for (uint32_t i = 0; i < num_entries; i++) {
-        uint32_t sec_idx   = i / entries_per_sector;
+        uint64_t sec_idx   = i / entries_per_sector;
         uint32_t sec_off   = (i % entries_per_sector) * entry_size;
 
         if (sec_off == 0) {

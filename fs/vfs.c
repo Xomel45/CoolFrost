@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include <stddef.h>
 #include "fat32.h"
 #include "ext2.h"
 #include "ntfs.h"
@@ -137,7 +138,7 @@ int vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path) {
     /* Store the path */
     vfs_strcpy(mount_table[slot].path, mount_path, 64);
     mount_table[slot].partition    = partition;
-    mount_table[slot].part_sectors = parts[partition].sector_count;
+    mount_table[slot].part_sectors = (uint64_t)parts[partition].sector_count;
 
     /* Detect filesystem by partition type byte */
     uint8_t ptype = parts[partition].type;
@@ -172,7 +173,7 @@ int vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path) {
  *  by reading its first sector and checking for FAT32 BPB markers.
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int vfs_mount_gpt(uint8_t drive, uint32_t lba_start, uint32_t sector_count,
+int vfs_mount_gpt(uint8_t drive, uint64_t lba_start, uint64_t sector_count,
                   const char *mount_path) {
     /* Find a free slot */
     int slot = -1;
@@ -302,31 +303,31 @@ int vfs_close(int fd) {
  *  vfs_read — read from an open file, advance offset
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int vfs_read(int fd, void *buffer, uint32_t size) {
+int vfs_read(int fd, void *buffer, size_t size) {
     if (fd < 0 || fd >= MAX_FD)  return -1;
     if (!fd_table[fd].active)    return -1;
 
     vfs_node_t *node = fd_table[fd].node;
     if (!node || !node->read)    return -1;
 
-    int n = node->read(node, fd_table[fd].offset, size, buffer);
+    int n = node->read(node, fd_table[fd].offset, (uint32_t)size, buffer);
     if (n > 0)
-        fd_table[fd].offset += (uint32_t)n;
+        fd_table[fd].offset += (uint64_t)n;
     return n;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
 
-int vfs_write(int fd, const void *buffer, uint32_t size) {
+int vfs_write(int fd, const void *buffer, size_t size) {
     if (fd < 0 || fd >= MAX_FD)  return -1;
     if (!fd_table[fd].active)    return -1;
 
     vfs_node_t *node = fd_table[fd].node;
     if (!node || !node->write)   return -1;
 
-    int n = node->write(node, fd_table[fd].offset, size, buffer);
+    int n = node->write(node, fd_table[fd].offset, (uint32_t)size, buffer);
     if (n > 0)
-        fd_table[fd].offset += (uint32_t)n;
+        fd_table[fd].offset += (uint64_t)n;
     return n;
 }
 

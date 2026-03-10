@@ -56,21 +56,19 @@ double pow(double x, int y)
     }
 }
 
-void llimit(char *src, uint32_t n, char a) {
-    if (strlen(src) == n) return;
-    if (strlen(src) > n) {
-        memcpy(src, src, n);
+void llimit(char *src, size_t n, char a) {
+    size_t len = strlen(src);
+    if (len == n) return;
+    if (len > n) {
         src[n] = '\0';
         return;
     }
-    int i;
-    for (i = strlen(src); i < n;i++) {
+    for (size_t i = len; i < n; i++)
         src[i] = a;
-    }
-    src[i] = '\0';
+    src[n] = '\0';
 }
 
-void rlimit(char *src, uint32_t n, char a) {
+void rlimit(char *src, size_t n, char a) {
     size_t len = strlen(src);
     if (len >= n-1) {
         src[n-1] = '\0';
@@ -119,7 +117,7 @@ char *ftoa(double value, char *str, int base, int precision)
     // Дробная часть
     double power = pow((double)base, precision);
     // используем unsigned int чтобы избежать проблем с отрицательными числами
-    unsigned int frac_int = (unsigned int)(frac_part * power + 0.5); 
+    unsigned long frac_int = (unsigned long)(frac_part * power + 0.5);
 
     // Преобразуем дробную часть
     char frac_buf[64];

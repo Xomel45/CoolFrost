@@ -124,8 +124,8 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             gpt_partition_entry_t *gparts = gpt_parts_buf;
             int gn = ata_read_gpt(0, gparts, MAX_GPT_PARTS);
             for (int p = 0; p < gn && !mounted; p++) {
-                uint32_t lba   = (uint32_t)gparts[p].first_lba;
-                uint32_t count = (uint32_t)(gparts[p].last_lba - gparts[p].first_lba + 1);
+                uint64_t lba   = gparts[p].first_lba;
+                uint64_t count = gparts[p].last_lba - gparts[p].first_lba + 1;
                 if (vfs_mount_gpt(0, lba, count, "/hda1") == 0) {
                     printf("Mounted GPT partition %d at /hda1\n", p);
                     mounted = 1;
@@ -257,10 +257,10 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         gpt_partition_entry_t *gparts = gpt_parts_buf;
                         int gn = ata_read_gpt(i, gparts, MAX_GPT_PARTS);
                         for (int p = 0; p < gn; p++) {
-                            uint32_t lba = (uint32_t)gparts[p].first_lba;
-                            uint32_t secs = (uint32_t)(gparts[p].last_lba - gparts[p].first_lba + 1);
-                            uint32_t pmb = secs / 2048;
-                            printf("  p%d: %s  LBA %u  %u MB\n",
+                            uint64_t lba = gparts[p].first_lba;
+                            uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
+                            uint64_t pmb = secs / 2048;
+                            printf("  p%d: %s  LBA %lu  %lu MB\n",
                                     p, gpt_type_name(&gparts[p].type_guid),
                                     lba, pmb);
                         }
@@ -278,6 +278,71 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     }
                 }
             }
+        } else if (starts_with(cmd_buf, "mount ")) {
+            /* mount <drive> <part> <path>  — mount MBR partition
+             * mount <drive> gpt <part> <path> — mount GPT partition by index */
+            const char *arg = cmd_buf + 6;
+            while (*arg == ' ') arg++;
+
+            /* Parse drive index */
+            uint8_t drv = 0;
+            while (*arg >= '0' && *arg <= '9') drv = drv * 10 + (*arg++ - '0');
+            while (*arg == ' ') arg++;
+
+            if (*arg == 'g') {
+                /* GPT mount: mount <drive> gpt <part_index> <path> */
+                /* skip "gpt" */
+                arg += 3;
+                while (*arg == ' ') arg++;
+                int pidx = 0;
+                while (*arg >= '0' && *arg <= '9') pidx = pidx * 10 + (*arg++ - '0');
+                while (*arg == ' ') arg++;
+                if (!*arg) {
+                    kprint_attr("Usage: mount <drive> gpt <part_idx> <path>\n", RED_FG);
+                } else {
+                    gpt_partition_entry_t *gparts = gpt_parts_buf;
+                    int gn = ata_read_gpt(drv, gparts, MAX_GPT_PARTS);
+                    if (pidx >= gn) {
+                        kprint_attr("GPT partition index out of range\n", RED_FG);
+                    } else {
+                        uint64_t lba   = gparts[pidx].first_lba;
+                        uint64_t count = gparts[pidx].last_lba - gparts[pidx].first_lba + 1;
+                        if (vfs_mount_gpt(drv, lba, count, arg) == 0)
+                            printf("Mounted at %s\n", arg);
+                        else
+                            kprint_attr("Mount failed\n", RED_FG);
+                    }
+                }
+            } else {
+                /* MBR mount: mount <drive> <part> <path> */
+                int pidx = 0;
+                while (*arg >= '0' && *arg <= '9') pidx = pidx * 10 + (*arg++ - '0');
+                while (*arg == ' ') arg++;
+                if (!*arg) {
+                    kprint_attr("Usage: mount <drive> <part> <path>\n", RED_FG);
+                } else {
+                    if (vfs_mount(drv, (uint8_t)pidx, arg) == 0)
+                        printf("Mounted at %s\n", arg);
+                    else
+                        kprint_attr("Mount failed\n", RED_FG);
+                }
+            }
+        } else if (starts_with(cmd_buf, "umount ")) {
+            const char *path = cmd_buf + 7;
+            while (*path == ' ') path++;
+            if (!*path) {
+                kprint_attr("Usage: umount <path>\n", RED_FG);
+            } else {
+                if (vfs_umount(path) == 0)
+                    printf("Unmounted %s\n", path);
+                else
+                    kprint_attr("Not mounted or umount failed\n", RED_FG);
+            }
+        } else if (strcmp(cmd_buf, "poweroff") == 0) {
+            clear_screen();
+            kprint("Shutting down...\n");
+            sleep_ms(500);
+            poweroff();
         } else if (starts_with(cmd_buf, "ping ")) {
             const char *host = cmd_buf + 5;
             while (*host == ' ') host++;
@@ -316,7 +381,11 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "ls - list files on mounted disk\n"
                         "cat <file> - show file contents\n"
                         "lsblk - list ATA drives and partitions\n"
-                        "ping <host> - ping a host (simulated)\n", GREEN_FG);
+                        "mount <drv> <part> <path> - mount MBR partition\n"
+                        "mount <drv> gpt <idx> <path> - mount GPT partition\n"
+                        "umount <path> - unmount a filesystem\n"
+                        "ping <host> - ping a host (simulated)\n"
+                        "poweroff - shut down the system\n", GREEN_FG);
         } else if (strcmp(cmd_buf, "reboot") == 0) {
             reboot();
         } else if (strcmp(cmd_buf, "charmap") == 0) {

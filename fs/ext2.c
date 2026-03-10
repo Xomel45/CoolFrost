@@ -49,7 +49,7 @@ static ext2_fs_t *alloc_fs(void) {
 
 /* Read one full block into `buf` */
 static int read_block(ext2_fs_t *fs, uint32_t block, void *buf) {
-    uint32_t lba = fs->part_lba + block * fs->sectors_per_block;
+    uint64_t lba = fs->part_lba + (uint64_t)block * fs->sectors_per_block;
     return ata_read_sectors(fs->drive, lba,
                             (uint8_t)fs->sectors_per_block, buf);
 }
@@ -283,7 +283,7 @@ vfs_node_t *ext2_finddir(vfs_node_t *node, const char *name) {
  *  ext2_read — read bytes from a file
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int ext2_read(vfs_node_t *node, uint32_t offset, uint32_t size, void *buffer) {
+int ext2_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
     ext2_fs_t *fs = (ext2_fs_t *)node->fs_private;
     if (!fs) return -1;
 
@@ -326,7 +326,7 @@ int ext2_read(vfs_node_t *node, uint32_t offset, uint32_t size, void *buffer) {
  *  ext2_mount — mount an ext2/3/4 partition (read-only)
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int ext2_mount(uint8_t drive, uint32_t part_lba, mount_point_t *mp) {
+int ext2_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     /* Superblock starts at byte 1024 = LBA+2 (two 512-byte sectors) */
     uint8_t sb_raw[1024];
     if (ata_read_sectors(drive, part_lba + 2, 2, sb_raw) != 0)

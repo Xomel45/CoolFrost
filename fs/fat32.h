@@ -68,14 +68,14 @@ typedef struct __attribute__((packed)) {
 /* ── Internal state for a mounted FAT32 volume ─────────────────────────── */
 typedef struct {
     uint8_t  drive;                 /* ATA drive index              */
-    uint32_t part_lba;              /* partition start LBA          */
+    uint64_t part_lba;              /* partition start LBA          */
     uint8_t  sectors_per_cluster;
     uint16_t reserved_sectors;
     uint8_t  num_fats;
     uint32_t fat_size;              /* sectors per FAT              */
     uint32_t root_cluster;          /* first cluster of root dir    */
-    uint32_t fat_start_lba;         /* absolute LBA of first FAT    */
-    uint32_t data_start_lba;        /* absolute LBA of cluster 2    */
+    uint64_t fat_start_lba;         /* absolute LBA of first FAT    */
+    uint64_t data_start_lba;        /* absolute LBA of cluster 2    */
     uint32_t total_sectors;
     char     volume_label[12];
 } fat32_fs_t;
@@ -84,12 +84,12 @@ typedef struct {
 
 /* Mount a FAT32 partition.  Reads BPB, validates, fills mount_point_t.
  * Returns 0 on success, negative on error. */
-int fat32_mount(uint8_t drive, uint32_t part_lba, mount_point_t *mp);
+int fat32_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp);
 
 /* VFS callbacks — wired into vfs_node_t by fat32_mount / fat32_finddir */
 dirent_t   *fat32_readdir(vfs_node_t *node, uint32_t index);
 vfs_node_t *fat32_finddir(vfs_node_t *node, const char *name);
-int         fat32_read(vfs_node_t *node, uint32_t offset, uint32_t size,
+int         fat32_read(vfs_node_t *node, uint64_t offset, uint32_t size,
                        void *buffer);
 
 #endif

@@ -47,3 +47,29 @@ loop:
 }
 
 // -----------------------------------------------------------------------------
+
+/*
+ * poweroff() — ACPI S5 shutdown.
+ *
+ * Tries several well-known ACPI PM1a control port addresses used by QEMU
+ * and Bochs/VirtualBox.  Falls back to CLI + HLT loop if none respond.
+ *
+ * PM1a_CNT write: bits [12:10] = SLP_TYP (5 for S5), bit [13] = SLP_EN
+ * Value: (5 << 10) | (1 << 13) = 0x3400
+ * QEMU PIIX4 PM1a_CNT port = 0x0004 (PMBASE defaults to 0x0600 → 0x0604)
+ * QEMU Q35   PM1a_CNT port = 0x4004
+ * Bochs      PM1a_CNT port = 0xB004 (value 0x2000 — different S5 type)
+ */
+void poweroff(void) {
+    asm volatile("cli");
+
+    /* QEMU PIIX4 / SeaBIOS */
+    port_word_out(0x0604, 0x2000);
+    /* QEMU Q35 chipset */
+    port_word_out(0x4004, 0x3400);
+    /* Bochs / older VirtualBox */
+    port_word_out(0xB004, 0x2000);
+
+    /* If all ACPI attempts fail, halt */
+    for (;;) asm volatile("hlt");
+}

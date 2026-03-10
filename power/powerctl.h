@@ -3,5 +3,6 @@
 
 void halt();
 void reboot();
+void poweroff();
 
 #endif

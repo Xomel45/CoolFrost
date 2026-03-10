@@ -2,6 +2,7 @@
 #define VFS_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include "../drivers/ata.h"
 
 /* ── Limits ────────────────────────────────────────────────────────────── */
@@ -32,7 +33,7 @@
 /* ── Directory entry (returned by readdir) ─────────────────────────────── */
 typedef struct {
     char     name[MAX_FILENAME];
-    uint32_t size;
+    uint64_t size;
     uint8_t  type;          /* VFS_FILE or VFS_DIRECTORY */
 } dirent_t;
 
@@ -53,8 +54,8 @@ typedef struct {
  */
 struct vfs_node;
 
-typedef int          (*vfs_read_fn)(struct vfs_node *node, uint32_t offset, uint32_t size, void *buffer);
-typedef int          (*vfs_write_fn)(struct vfs_node *node, uint32_t offset, uint32_t size, const void *buffer);
+typedef int          (*vfs_read_fn)(struct vfs_node *node, uint64_t offset, uint32_t size, void *buffer);
+typedef int          (*vfs_write_fn)(struct vfs_node *node, uint64_t offset, uint32_t size, const void *buffer);
 typedef int          (*vfs_open_fn)(struct vfs_node *node, uint8_t flags);
 typedef int          (*vfs_close_fn)(struct vfs_node *node);
 typedef dirent_t    *(*vfs_readdir_fn)(struct vfs_node *node, uint32_t index);
@@ -63,7 +64,7 @@ typedef struct vfs_node *(*vfs_finddir_fn)(struct vfs_node *node, const char *na
 typedef struct vfs_node {
     char            name[MAX_FILENAME];
     uint8_t         type;           /* VFS_FILE, VFS_DIRECTORY, VFS_MOUNTPOINT */
-    uint32_t        size;           /* file size in bytes (0 for dirs) */
+    uint64_t        size;           /* file size in bytes (0 for dirs) */
     uint32_t        inode;          /* filesystem-specific identifier */
 
     /* Operations — set by the concrete filesystem driver */
@@ -91,8 +92,8 @@ typedef struct {
     uint8_t      drive;             /* ATA drive index          */
     uint8_t      partition;         /* partition index (0-3)    */
     uint8_t      fs_type;           /* FS_FAT32, etc.           */
-    uint32_t     part_lba;          /* partition start LBA      */
-    uint32_t     part_sectors;      /* partition size in sectors */
+    uint64_t     part_lba;          /* partition start LBA      */
+    uint64_t     part_sectors;      /* partition size in sectors */
 } mount_point_t;
 
 /* ── File descriptor ───────────────────────────────────────────────────── *
@@ -102,7 +103,7 @@ typedef struct {
  */
 typedef struct {
     vfs_node_t  *node;              /* the opened file/dir      */
-    uint32_t     offset;            /* current R/W position     */
+    uint64_t     offset;            /* current R/W position     */
     uint8_t      flags;             /* O_RDONLY, O_WRONLY, etc.  */
     uint8_t      active;            /* 1 = in use               */
 } file_descriptor_t;
@@ -114,8 +115,8 @@ void      vfs_init(void);
 /* File operations */
 int       vfs_open(const char *path, uint8_t flags);
 int       vfs_close(int fd);
-int       vfs_read(int fd, void *buffer, uint32_t size);
-int       vfs_write(int fd, const void *buffer, uint32_t size);
+int       vfs_read(int fd, void *buffer, size_t size);
+int       vfs_write(int fd, const void *buffer, size_t size);
 
 /* Directory operations */
 dirent_t *vfs_readdir(int fd, uint32_t index);
@@ -123,7 +124,7 @@ int       vfs_finddir(const char *path, dirent_t *out);
 
 /* Mount operations */
 int       vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path);
-int       vfs_mount_gpt(uint8_t drive, uint32_t lba_start, uint32_t sector_count,
+int       vfs_mount_gpt(uint8_t drive, uint64_t lba_start, uint64_t sector_count,
                         const char *mount_path);
 int       vfs_umount(const char *mount_path);
 

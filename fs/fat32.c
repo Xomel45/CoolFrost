@@ -41,14 +41,14 @@ static fat32_fs_t *alloc_fs(void) {
 }
 
 /* Absolute LBA of the first sector of a data cluster */
-static uint32_t cluster_to_lba(fat32_fs_t *fs, uint32_t cluster) {
-    return fs->data_start_lba + (cluster - 2) * fs->sectors_per_cluster;
+static uint64_t cluster_to_lba(fat32_fs_t *fs, uint32_t cluster) {
+    return fs->data_start_lba + (uint64_t)(cluster - 2) * fs->sectors_per_cluster;
 }
 
 /* Follow the FAT chain: return the next cluster, or >= FAT32_EOC if end */
 static uint32_t fat32_next_cluster(fat32_fs_t *fs, uint32_t cluster) {
     uint32_t fat_offset  = cluster * 4;
-    uint32_t fat_sector  = fs->fat_start_lba + (fat_offset / 512);
+    uint64_t fat_sector  = fs->fat_start_lba + (fat_offset / 512);
     uint32_t entry_off   = fat_offset % 512;
 
     if (ata_read_sectors(fs->drive, fat_sector, 1, fat_buf) != 0)
@@ -114,7 +114,7 @@ dirent_t *fat32_readdir(vfs_node_t *node, uint32_t index) {
     uint32_t valid_count = 0;
 
     while (cluster < FAT32_EOC) {
-        uint32_t lba = cluster_to_lba(fs, cluster);
+        uint64_t lba = cluster_to_lba(fs, cluster);
 
         for (uint8_t s = 0; s < fs->sectors_per_cluster; s++) {
             if (ata_read_sectors(fs->drive, lba + s, 1, sector_buf) != 0)
@@ -155,7 +155,7 @@ vfs_node_t *fat32_finddir(vfs_node_t *node, const char *name) {
     uint32_t cluster = node->inode;
 
     while (cluster < FAT32_EOC) {
-        uint32_t lba = cluster_to_lba(fs, cluster);
+        uint64_t lba = cluster_to_lba(fs, cluster);
 
         for (uint8_t s = 0; s < fs->sectors_per_cluster; s++) {
             if (ata_read_sectors(fs->drive, lba + s, 1, sector_buf) != 0)
@@ -216,7 +216,7 @@ vfs_node_t *fat32_finddir(vfs_node_t *node, const char *name) {
  *  Returns number of bytes actually read, or negative on error.
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int fat32_read(vfs_node_t *node, uint32_t offset, uint32_t size, void *buffer) {
+int fat32_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
     fat32_fs_t *fs = (fat32_fs_t *)node->fs_private;
     if (!fs) return -1;
     if (!(node->type & VFS_FILE)) return -1;
@@ -229,7 +229,7 @@ int fat32_read(vfs_node_t *node, uint32_t offset, uint32_t size, void *buffer) {
     uint32_t cluster      = node->inode;
     uint32_t cluster_size = (uint32_t)fs->sectors_per_cluster * 512;
     uint32_t bytes_read   = 0;
-    uint32_t pos          = 0;          /* byte offset at cluster start */
+    uint64_t pos          = 0;          /* byte offset at cluster start */
 
     /* Skip whole clusters before the offset */
     while (pos + cluster_size <= offset && cluster < FAT32_EOC) {
@@ -241,7 +241,7 @@ int fat32_read(vfs_node_t *node, uint32_t offset, uint32_t size, void *buffer) {
 
     /* Read cluster by cluster */
     while (bytes_read < size && cluster < FAT32_EOC) {
-        uint32_t lba = cluster_to_lba(fs, cluster);
+        uint64_t lba = cluster_to_lba(fs, cluster);
 
         for (uint8_t s = 0; s < fs->sectors_per_cluster && bytes_read < size; s++) {
             uint32_t sec_start = pos + (uint32_t)s * 512;
@@ -279,7 +279,7 @@ int fat32_read(vfs_node_t *node, uint32_t offset, uint32_t size, void *buffer) {
  *  Returns 0 on success.
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int fat32_mount(uint8_t drive, uint32_t part_lba, mount_point_t *mp) {
+int fat32_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     /* Read boot sector */
     uint8_t boot[512];
     if (ata_read_sectors(drive, part_lba, 1, boot) != 0)
