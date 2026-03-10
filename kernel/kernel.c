@@ -278,6 +278,26 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     }
                 }
             }
+        } else if (starts_with(cmd_buf, "ping ")) {
+            const char *host = cmd_buf + 5;
+            while (*host == ' ') host++;
+            if (!*host) {
+                kprint_attr("Usage: ping <host>\n", RED_FG);
+            } else {
+                printf("Pinging %s with 32 bytes of data:\n", host);
+                static const uint32_t rtts[4] = {1, 2, 1, 3};
+                for (int i = 0; i < 4; i++) {
+                    sleep_ms(500);
+                    printf("Reply from %s: bytes=32 time=%ums TTL=64\n",
+                           host, rtts[i]);
+                }
+                kprint("\nPing statistics for ");
+                kprint((char *)host);
+                kprint(":\n"
+                       "  Packets: Sent = 4, Received = 4, Lost = 0 (0% loss)\n"
+                       "Approximate round trip times in milli-seconds:\n"
+                       "  Minimum = 1ms, Maximum = 3ms, Average = 1ms\n");
+            }
         } else if (strcmp(cmd_buf, "help") == 0) {
             kprint_attr("CoolFrost Help:\n"
                         "====================\n"
@@ -295,7 +315,8 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "spkctl - PC speaker controller\n"
                         "ls - list files on mounted disk\n"
                         "cat <file> - show file contents\n"
-                        "lsblk - list ATA drives and partitions\n", GREEN_FG);
+                        "lsblk - list ATA drives and partitions\n"
+                        "ping <host> - ping a host (simulated)\n", GREEN_FG);
         } else if (strcmp(cmd_buf, "reboot") == 0) {
             reboot();
         } else if (strcmp(cmd_buf, "charmap") == 0) {
