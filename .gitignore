@@ -5,3 +5,4 @@ hdd.img
 *.o
 *.bin
 *.elf
+.idea
