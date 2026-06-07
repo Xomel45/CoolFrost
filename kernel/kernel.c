@@ -15,12 +15,25 @@
 #include "../drivers/pci.h"
 #include "../drivers/gpu.h"
 #include "../drivers/ata.h"
+#include "../cpu/apic.h"
+#include "../cpu/smp.h"
+#include "../cpu/sched.h"
 #include "../fs/vfs.h"
 #include "../fs/fat32.h"
 #include "../fs/ext2.h"
 #include "../fs/ntfs.h"
 
 #include <stdint.h>
+
+/* Simple SMP demo task: counts to N and marks itself done */
+static volatile uint64_t smptest_results[MAX_TASKS];
+
+static void count_task(void *arg) {
+    int idx = (int)(uintptr_t)arg;
+    uint64_t sum = 0;
+    for (uint64_t i = 0; i < 10000000ULL; i++) sum += i;
+    smptest_results[idx] = sum;
+}
 
 static char     cmd_buf[512];        /* static shell input buffer   */
 static gpu_info_t gpu_list[MAX_GPUS];
@@ -70,11 +83,13 @@ kernel_globals *get_kernel_globals() {
 
 // Function that is called at the very start of the kernel to perform needed operations before, like initializing everything
 void kstart(uintptr_t addr) {
+    /* Parse multiboot2 info and init screen before anything else */
+    globals.multiboot_addr = (mb2_info_t *)addr;
+    mb_get_framebuffer(globals.multiboot_addr, &globals.fb_info);
+    screen_init(&globals.fb_info);
+
     isr_install();
     irq_install();
-
-    // Initializing globals
-    globals.multiboot_addr = (multiboot_info_t *)addr;
     rtc_read_datetime(&globals.datetime);
     // If CPUID detected
     if (check_cpuid()) {
@@ -166,6 +181,10 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             }
         }
     }
+
+    /* Bring up Application Processors */
+    smp_init();
+    printf("SMP: %d CPU(s) online\n", smp_cpu_count);
 
     while (1) {
         kprint("\n> ");
@@ -365,6 +384,34 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                        "Approximate round trip times in milli-seconds:\n"
                        "  Minimum = 1ms, Maximum = 3ms, Average = 1ms\n");
             }
+        } else if (strcmp(cmd_buf, "cpucount") == 0) {
+            printf("Online CPUs: %d\n", smp_cpu_count);
+            printf("BSP LAPIC ID: %u\n", (unsigned)lapic_id());
+        } else if (strcmp(cmd_buf, "ps") == 0) {
+            int n = sched_task_count();
+            if (n == 0) {
+                kprint("No tasks submitted yet\n");
+            } else {
+                kprint(" ID  CPU  State    Name\n");
+                static const char *states[] = {"ready  ", "running", "done   "};
+                for (int i = 0; i < n; i++) {
+                    task_t *t = sched_get_task(i);
+                    if (!t) continue;
+                    const char *st = (t->state <= TASK_DONE) ? states[t->state] : "???    ";
+                    if (t->cpu_id >= 0)
+                        printf("  %d   %d   %s  %s\n", t->id, t->cpu_id, st, t->name);
+                    else
+                        printf("  %d   -   %s  %s\n", t->id, st, t->name);
+                }
+            }
+        } else if (strcmp(cmd_buf, "smptest") == 0) {
+            int n = smp_cpu_count;
+            kprint("Submitting tasks to all CPUs...\n");
+            for (int i = 0; i < n * 2; i++) {
+                int id = sched_submit("count10M", count_task, (void *)(uintptr_t)i);
+                if (id < 0) { kprint("Task queue full\n"); break; }
+            }
+            printf("Submitted %d tasks. Use 'ps' to check status.\n", n * 2);
         } else if (strcmp(cmd_buf, "gpuinfo") == 0) {
             int n = gpu_scan(gpu_list, MAX_GPUS);
             if (n == 0) {
@@ -408,6 +455,9 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "charmap - character map of 437 Code Page\n"
                         "pciinfo - list of PCI devices\n"
                         "gpuinfo - show GPU/display controller info\n"
+                        "cpucount - show number of online CPUs\n"
+                        "ps - list submitted tasks and their status\n"
+                        "smptest - submit parallel tasks to all CPUs\n"
                         "spkctl - PC speaker controller\n"
                         "ls - list files on mounted disk\n"
                         "cat <file> - show file contents\n"

@@ -1,6 +1,7 @@
 C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c fs/*.c)
 HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h fs/*.h)
-OBJ       = ${C_SOURCES:.c=.o} cpu/interrupt.o drivers/cpuid-detect.o
+OBJ       = ${C_SOURCES:.c=.o} cpu/interrupt.o drivers/cpuid-detect.o \
+            boot/ap_trampoline_embed.o
 
 CC     = x86_64-elf-gcc
 LD     = x86_64-elf-ld
@@ -11,6 +12,13 @@ GDB    = gdb
 # -fno-pic:      no position-independent code (we link at a fixed address)
 CFLAGS = -g -ffreestanding -Wall -Wextra -fno-exceptions \
          -m64 -mno-red-zone -fno-pic -fno-stack-protector
+
+# Flat-binary AP trampoline → embedded into the kernel as a blob
+boot/ap_trampoline.bin: boot/ap_trampoline.asm
+	nasm -f bin -o $@ $<
+
+boot/ap_trampoline_embed.o: boot/ap_trampoline_embed.asm boot/ap_trampoline.bin
+	nasm -f elf64 -o $@ $<
 
 kernel.elf: boot/multiboot_entry.o ${OBJ}
 	${LD} -m elf_x86_64 -o $@ -T linker.ld $^
@@ -55,5 +63,5 @@ check: ${C_SOURCES}
 
 clean:
 	rm -rf *.iso *.dis *.o *.elf hdd.img
-	rm -rf kernel/*.o boot/*.o drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o
+	rm -rf kernel/*.o boot/*.o boot/*.bin drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o
 	rm -rf iso/

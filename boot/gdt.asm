@@ -1,3 +1,5 @@
+global gdt64_descriptor
+
 align 16
 gdt64_start:
     dq 0                ; Null descriptor
@@ -18,6 +20,16 @@ gdt64_data:
     db 0x00
     db 10010010b        ; Flags: P=1, DPL=00, S=1, type=0010
     db 11001111b        ; Flags: G=1, D=1, L=0 | limit bits 16-19 = 0xF
+    db 0x00
+
+; AP-trampoline compatibility: duplicate code64 at selector 0x18
+; (trampoline does far-jmp 0x18:, so after AP loads this GDT CS=0x18 still works)
+gdt64_code_ap:
+    dw 0xFFFF
+    dw 0x0000
+    db 0x00
+    db 10011010b        ; same as gdt64_code
+    db 10101111b
     db 0x00
 
 gdt64_end:

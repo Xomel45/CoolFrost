@@ -1,80 +1,96 @@
 #ifndef SCREEN_H
 #define SCREEN_H
 
-#define VIDEO_ADDRESS 0xb8000
-#define MAX_ROWS 25
-#define MAX_COLS 80
-#define WHITE_ON_BLACK 0x0f
-#define RED_ON_WHITE 0xf4
-#define RED_ON_BLACK 0x04
-#define WHITE_ON_RED 0x4f
+#include <stdint.h>
+#include "../kernel/multiboot.h"
 
-enum VGAForegroundColors{
-    BLACK_FG = 0x00,
-    BLUE_FG = 0x01,
-    GREEN_FG = 0x02,
-    CYAN_FG = 0x03,
-    RED_FG = 0x04,
-    MAGENTA_FG = 0x05,
-    BROWN_FG,
-    LIGHTGRAY_FG,
-    DARKGRAY_FG,
-    LIGHTBLUE_FG,
-    LIGHTGREEN_FG,
-    LIGHTCYAN_FG,
-    LIGHTRED_FG,
-    LIGHTMAGENTA_FG,
-    YELLOW_FG,
-    WHITE_FG
+/* Packed 32-bit ARGB color */
+#define COLOR_BLACK       0x00000000
+#define COLOR_WHITE       0x00FFFFFF
+#define COLOR_RED         0x00FF0000
+#define COLOR_GREEN       0x0000FF00
+#define COLOR_BLUE        0x000000FF
+#define COLOR_CYAN        0x0000FFFF
+#define COLOR_MAGENTA     0x00FF00FF
+#define COLOR_YELLOW      0x00FFFF00
+#define COLOR_LIGHTGRAY   0x00AAAAAA
+#define COLOR_DARKGRAY    0x00555555
+
+/* Legacy VGA color attribute bytes (for compatibility with existing kprint_attr callers) */
+/* Foreground nibble */
+enum VGAForegroundColors {
+    BLACK_FG       = 0x00,
+    BLUE_FG        = 0x01,
+    GREEN_FG       = 0x02,
+    CYAN_FG        = 0x03,
+    RED_FG         = 0x04,
+    MAGENTA_FG     = 0x05,
+    BROWN_FG       = 0x06,
+    LIGHTGRAY_FG   = 0x07,
+    DARKGRAY_FG    = 0x08,
+    LIGHTBLUE_FG   = 0x09,
+    LIGHTGREEN_FG  = 0x0A,
+    LIGHTCYAN_FG   = 0x0B,
+    LIGHTRED_FG    = 0x0C,
+    LIGHTMAGENTA_FG= 0x0D,
+    YELLOW_FG      = 0x0E,
+    WHITE_FG       = 0x0F,
 };
 
-enum VGABackgroundColors{
-    BLACK_BG = 0x00,
-    BLUE_BG = 0x10,
-    GREEN_BG = 0x20,
-    CYAN_BG = 0x30,
-    RED_BG = 0x40,
-    MAGENTA_BG = 0x50,
-    BROWN_BG = 0x60,
-    LIGHTGRAY_BG = 0x70,
-    DARKGRAY_BG = 0x80,
-    LIGHTBLUE_BG = 0x90,
-    LIGHTGREEN_BG = 0xA0,
-    LIGHTCYAN_BG = 0xB0,
-    LIGHTRED_BG = 0xC0,
-    LIGHTMAGENTA_BG = 0xD0,
-    YELLOW_BG = 0xB0,
-    WHITE_BG = 0xB0
+/* Background nibble (high nibble of attr byte) */
+enum VGABackgroundColors {
+    BLACK_BG       = 0x00,
+    BLUE_BG        = 0x10,
+    GREEN_BG       = 0x20,
+    CYAN_BG        = 0x30,
+    RED_BG         = 0x40,
+    MAGENTA_BG     = 0x50,
+    BROWN_BG       = 0x60,
+    LIGHTGRAY_BG   = 0x70,
 };
 
+/* Standard attribute bytes */
+#define WHITE_ON_BLACK  0x0F
+#define RED_ON_WHITE    0xF4
+#define RED_ON_BLACK    0x04
+#define WHITE_ON_RED    0x4F
+
+/* CP437 box-drawing characters (same codes as VGA ROM) */
 enum BoxChars {
-    BoxCrnLeftUp = 0xC9,
-    BoxCrnRightUp = 0xBB,
-    BoxCrnLeftDown = 0xC8,
-    BoxCrnRightDown = 0xBC,
-    BoxLineVert = 0xBA,
-    BoxLineHorz = 0xCD,
-    BoxVer2HorzLeft = 0xB9,
-    BoxVer2HorzRight = 0xCC,
-    BoxHorz2VerUp = 0xCA,
-    BoxHorz2VerDown = 0xCB,
-    BoxCross = 0xCE
+    BoxCrnLeftUp      = 0xC9,
+    BoxCrnRightUp     = 0xBB,
+    BoxCrnLeftDown    = 0xC8,
+    BoxCrnRightDown   = 0xBC,
+    BoxLineVert       = 0xBA,
+    BoxLineHorz       = 0xCD,
+    BoxVer2HorzLeft   = 0xB9,
+    BoxVer2HorzRight  = 0xCC,
+    BoxHorz2VerUp     = 0xCA,
+    BoxHorz2VerDown   = 0xCB,
+    BoxCross          = 0xCE,
 };
 
-/* Screen i/o ports */
-#define REG_SCREEN_CTRL 0x3d4
-#define REG_SCREEN_DATA 0x3d5
+/* Font dimensions */
+#define FONT_W  8
+#define FONT_H  16
 
-/* Public kernel API */
-void clear_screen();
+/* Must be called before any kprint/clear_screen.
+ * Falls back to VGA text mode if type == MB2_FB_TYPE_EGA_TEXT or fb is unavailable. */
+void screen_init(fb_info_t *fb);
+
+void clear_screen(void);
 void kprint_at(char *message, int col, int row);
 void kprint_at_attr(char *message, int col, int row, char attr);
 void kprint(char *message);
 void kprint_char(char c);
 void kprint_attr(char *message, char attr);
-void kprint_backspace();
-int get_cursor_offset();
+void kprint_backspace(void);
+int  get_cursor_offset(void);
 void set_cursor_offset(int offset);
-int get_offset(int col, int row);
+int  get_offset(int col, int row);
+
+/* VGA text fallback registers (used when framebuffer unavailable) */
+#define REG_SCREEN_CTRL 0x3D4
+#define REG_SCREEN_DATA 0x3D5
 
 #endif

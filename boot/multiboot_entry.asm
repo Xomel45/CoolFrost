@@ -10,6 +10,16 @@ mb2_start:
     dd (mb2_end - mb2_start)                    ; Header length
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start)) ; Checksum
 
+    ; Framebuffer tag: request linear 1024x768x32
+    ; flags=0 means preferred, not required (GRUB may fall back to text mode)
+    align 8
+    dw 5    ; tag type = framebuffer
+    dw 0    ; flags = 0 (optional)
+    dd 20   ; size = 20 bytes
+    dd 1024 ; preferred width
+    dd 768  ; preferred height
+    dd 32   ; preferred depth (bpp)
+
     ; End tag (required by Multiboot2 spec)
     align 8
     dw 0    ; tag type = end
@@ -50,24 +60,40 @@ _start:
     mov edi, 0x1000
     mov cr3, edi                ; set PML4 address now (we'll fill it next)
     xor eax, eax
-    mov ecx, 3 * 4096 / 4      ; 3 pages as dwords
-    rep stosd                   ; zero all three pages
+    mov ecx, 5 * 4096 / 4      ; 5 pages as dwords (PML4 + PDPT + PD0 + PD3 + spare)
+    rep stosd                   ; zero 0x1000-0x5FFF
 
     ; PML4[0] → PDPT (present + writable)
     mov dword [0x1000], 0x2003
 
-    ; PDPT[0] → PD (present + writable)
+    ; PDPT[0] → PD@0x3000 (0x00000000-0x3FFFFFFF, 0-1GB RAM)
     mov dword [0x2000], 0x3003
 
-    ; PD: 512 entries, each maps a 2MB huge page
+    ; PDPT[3] → PD@0x4000 (0xC0000000-0xFFFFFFFF, 3-4GB MMIO/GPU)
+    mov dword [0x2018], 0x4003
+    mov dword [0x201C], 0x00000000
+
+    ; PD@0x3000: 512 × 2MB huge pages, identity map 0-1GB (cached, RAM)
     mov edi, 0x3000
     mov eax, 0x00000083         ; PS=1 (huge page), W=1, P=1
     mov ecx, 512
-.fill_pd:
+.fill_pd0:
     mov [edi], eax
+    mov dword [edi+4], 0
     add eax, 0x200000           ; advance by 2MB
     add edi, 8
-    loop .fill_pd
+    loop .fill_pd0
+
+    ; PD@0x4000: 512 × 2MB huge pages, identity map 3-4GB (PCD+PWT, MMIO/GPU/LAPIC)
+    mov edi, 0x4000
+    mov eax, 0xC000009B         ; physical 0xC0000000 + PS+PCD+PWT+W+P (0x9B)
+    mov ecx, 512
+.fill_pd3:
+    mov [edi], eax
+    mov dword [edi+4], 0
+    add eax, 0x200000
+    add edi, 8
+    loop .fill_pd3
 
     ; ── 2. Enable PAE + SSE (required for long mode / 64-bit GCC) ───────
     mov eax, cr4

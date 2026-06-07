@@ -3,69 +3,74 @@
 
 #include <stdint.h>
 
+/* Multiboot2 magic value passed in rdi to kernel_main */
+#define MB2_MAGIC 0x36D76289
+
+/* Tag types in the Multiboot2 info block */
+#define MB2_TAG_END          0
+#define MB2_TAG_CMDLINE      1
+#define MB2_TAG_BOOTLOADER   2
+#define MB2_TAG_BASIC_MEM    4
+#define MB2_TAG_MMAP         6
+#define MB2_TAG_FRAMEBUFFER  8
+
+/* Framebuffer types reported by GRUB */
+#define MB2_FB_TYPE_INDEXED  0
+#define MB2_FB_TYPE_RGB      1
+#define MB2_FB_TYPE_EGA_TEXT 2
+
 typedef struct __attribute__((packed)) {
-    uint32_t flags;
+    uint32_t type;
+    uint32_t size;
+} mb2_tag_t;
 
-    // flags bit 0
-    uint32_t mem_lower;
-    uint32_t mem_upper;
+typedef struct __attribute__((packed)) {
+    uint32_t type;   /* MB2_TAG_BASIC_MEM = 4 */
+    uint32_t size;
+    uint32_t mem_lower;   /* KB below 1MB */
+    uint32_t mem_upper;   /* KB above 1MB */
+} mb2_tag_basic_mem_t;
 
-    // flags bit 1
-    uint32_t boot_device;
+typedef struct __attribute__((packed)) {
+    uint32_t type;   /* MB2_TAG_BOOTLOADER = 2 */
+    uint32_t size;
+    char     string[0];
+} mb2_tag_string_t;
 
-    // flags bit 2
-    uint32_t cmdline;
-
-    // flags bit 3
-    uint32_t mods_count;
-    uint32_t mods_addr;
-
-    // flags bits 4/5 (symbols)
-    uint32_t syms[4];
-
-    // flags bit 6 (memory map)
-    uint32_t mmap_length;
-    uint32_t mmap_addr;
-
-    // flags bit 7
-    uint32_t drives_length;
-    uint32_t drives_addr;
-    
-    // flags bit 8
-    uint32_t config_table;
-
-    // flags bit 9
-    uint32_t boot_loader_name;
-
-    // flags bit 10
-    uint32_t apm_table;
-
-    // flags bit 11 -- VBE info
-    uint32_t vbe_control_info;   // physical addr of VbeInfoBlock
-    uint32_t vbe_mode_info;      // physical addr of ModeInfoBlock
-    uint16_t vbe_mode;           // current VBE mode number
-    uint16_t vbe_interface_seg;  // PMI: real-mode segment
-    uint16_t vbe_interface_off;  // PMI: offset within segment
-    uint16_t vbe_interface_len;  // PMI: length in bytes
-                                 
-    // flags bit 12 -- Framebuffer
+typedef struct __attribute__((packed)) {
+    uint32_t type;   /* MB2_TAG_FRAMEBUFFER = 8 */
+    uint32_t size;
     uint64_t framebuffer_addr;
     uint32_t framebuffer_pitch;
     uint32_t framebuffer_width;
     uint32_t framebuffer_height;
     uint8_t  framebuffer_bpp;
     uint8_t  framebuffer_type;
-    // color_info
-    uint8_t  framebuffer_red_field_position;
-    uint8_t  framebuffer_red_mask_size;
-    uint8_t  framebuffer_green_field_position;
-    uint8_t  framebuffer_green_mask_size;
-    uint8_t  framebuffer_blue_field_position;
-    uint8_t  framebuffer_blue_mask_size;
-} multiboot_info_t;
+    uint16_t reserved;
+} mb2_tag_framebuffer_t;
 
-char *mb_get_bootloader(multiboot_info_t *mbi);
-uint64_t mb_get_lower_mem(multiboot_info_t *mbi);
-uint64_t mb_get_upper_mem(multiboot_info_t *mbi);
+/* Multiboot2 info block header (first 8 bytes) */
+typedef struct __attribute__((packed)) {
+    uint32_t total_size;
+    uint32_t reserved;
+} mb2_info_t;
+
+/* Convenience type stored in globals */
+typedef struct {
+    uint64_t addr;
+    uint32_t pitch;
+    uint32_t width;
+    uint32_t height;
+    uint8_t  bpp;
+    uint8_t  type;   /* MB2_FB_TYPE_* */
+} fb_info_t;
+
+/* Walk tags and find one by type; returns NULL if not found */
+mb2_tag_t *mb2_find_tag(mb2_info_t *info, uint32_t tag_type);
+
+uint64_t   mb_get_lower_mem(mb2_info_t *info);
+uint64_t   mb_get_upper_mem(mb2_info_t *info);
+char      *mb_get_bootloader(mb2_info_t *info);
+int        mb_get_framebuffer(mb2_info_t *info, fb_info_t *out);
 
 #endif
