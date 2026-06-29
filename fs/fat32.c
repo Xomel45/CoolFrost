@@ -1,5 +1,5 @@
 #include "fat32.h"
-#include "../drivers/ata.h"
+#include "../drivers/ata.h"   /* blk_read, blk_write, DRIVE_TYPE_* */
 #include "../libc/mem.h"
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -51,7 +51,7 @@ static uint32_t fat32_next_cluster(fat32_fs_t *fs, uint32_t cluster) {
     uint64_t fat_sector  = fs->fat_start_lba + (fat_offset / 512);
     uint32_t entry_off   = fat_offset % 512;
 
-    if (ata_read_sectors(fs->drive, fat_sector, 1, fat_buf) != 0)
+    if (blk_read(fs->drive_type, fs->drive, fat_sector, 1, fat_buf) != 0)
         return FAT32_EOC;
 
     uint32_t next = *(uint32_t *)&fat_buf[entry_off];
@@ -117,7 +117,7 @@ dirent_t *fat32_readdir(vfs_node_t *node, uint32_t index) {
         uint64_t lba = cluster_to_lba(fs, cluster);
 
         for (uint8_t s = 0; s < fs->sectors_per_cluster; s++) {
-            if (ata_read_sectors(fs->drive, lba + s, 1, sector_buf) != 0)
+            if (blk_read(fs->drive_type, fs->drive, lba + s, 1, sector_buf) != 0)
                 return 0;
 
             fat32_dirent_t *entries = (fat32_dirent_t *)sector_buf;
@@ -158,7 +158,7 @@ vfs_node_t *fat32_finddir(vfs_node_t *node, const char *name) {
         uint64_t lba = cluster_to_lba(fs, cluster);
 
         for (uint8_t s = 0; s < fs->sectors_per_cluster; s++) {
-            if (ata_read_sectors(fs->drive, lba + s, 1, sector_buf) != 0)
+            if (blk_read(fs->drive_type, fs->drive, lba + s, 1, sector_buf) != 0)
                 return 0;
 
             fat32_dirent_t *entries = (fat32_dirent_t *)sector_buf;
@@ -251,7 +251,7 @@ int fat32_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
             if (sec_end <= offset)
                 continue;
 
-            if (ata_read_sectors(fs->drive, lba + s, 1, sector_buf) != 0)
+            if (blk_read(fs->drive_type, fs->drive, lba + s, 1, sector_buf) != 0)
                 return -1;
 
             /* How much of this 512-byte sector do we need? */
@@ -279,10 +279,10 @@ int fat32_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
  *  Returns 0 on success.
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int fat32_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
+int fat32_mount(uint8_t drive_type, uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     /* Read boot sector */
     uint8_t boot[512];
-    if (ata_read_sectors(drive, part_lba, 1, boot) != 0)
+    if (blk_read(drive_type, drive, part_lba, 1, boot) != 0)
         return -1;
 
     fat32_bpb_t *bpb = (fat32_bpb_t *)boot;
@@ -302,6 +302,7 @@ int fat32_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     if (!fs) return -4;
 
     fs->drive               = drive;
+    fs->drive_type          = drive_type;
     fs->part_lba            = part_lba;
     fs->sectors_per_cluster = bpb->sectors_per_cluster;
     fs->reserved_sectors    = bpb->reserved_sectors;

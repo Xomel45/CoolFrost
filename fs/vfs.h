@@ -126,6 +126,9 @@ int       vfs_finddir(const char *path, dirent_t *out);
 int       vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path);
 int       vfs_mount_gpt(uint8_t drive, uint64_t lba_start, uint64_t sector_count,
                         const char *mount_path);
+/* Mount a GPT partition from an NVMe drive */
+int       vfs_mount_nvme_gpt(uint8_t nvme_idx, uint64_t lba_start, uint64_t sector_count,
+                              const char *mount_path);
 int       vfs_umount(const char *mount_path);
 
 /* Query */

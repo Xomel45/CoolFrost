@@ -36,6 +36,15 @@ run-grub: kernel.elf
 	    -machine pcspk-audiodev=speaker \
 	    -enable-kvm -cpu host -vga std
 
+run-nvme: kernel.elf
+	qemu-system-x86_64 -m 512M -kernel kernel.elf \
+	    -drive file=hdd.img,format=raw,if=ide \
+	    -drive file=nvme.img,format=raw,if=none,id=nvme0 \
+	    -device nvme,serial=deadbeef,drive=nvme0 \
+	    -audiodev pa,id=speaker \
+	    -machine pcspk-audiodev=speaker \
+	    -enable-kvm -cpu host -vga std
+
 run-iso: CoolFrost.iso
 	qemu-system-x86_64 -m 512M -cdrom CoolFrost.iso \
 	    -drive file=hdd.img,format=raw,if=ide \

@@ -88,8 +88,8 @@ static int apply_fixup(uint8_t *record, uint16_t fixup_offset,
 /* Read MFT record by number into mft_buf */
 static int read_mft_record(ntfs_fs_t *fs, uint32_t record_num) {
     uint64_t lba = fs->mft_lba + (uint64_t)record_num * fs->mft_sectors;
-    if (ata_read_sectors(fs->drive, lba,
-                         (uint8_t)fs->mft_sectors, mft_buf) != 0)
+    if (blk_read(fs->drive_type, fs->drive, lba,
+                 (uint8_t)fs->mft_sectors, mft_buf) != 0)
         return -1;
 
     /* Validate signature */
@@ -191,8 +191,8 @@ static int read_nonresident(ntfs_fs_t *fs, ntfs_attr_nonresident_t *attr,
                 uint64_t lba = fs->part_lba
                              + (uint64_t)(lcn + clust_idx) * fs->sectors_per_cluster;
 
-                if (ata_read_sectors(fs->drive, lba,
-                                     fs->sectors_per_cluster, data_buf) != 0)
+                if (blk_read(fs->drive_type, fs->drive, lba,
+                             (uint8_t)fs->sectors_per_cluster, data_buf) != 0)
                     return -1;
 
                 uint32_t chunk = fs->cluster_size - within_clust;
@@ -481,9 +481,9 @@ int ntfs_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
  *  ntfs_mount — mount an NTFS partition (read-only)
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int ntfs_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
+int ntfs_mount(uint8_t drive_type, uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     uint8_t boot[512];
-    if (ata_read_sectors(drive, part_lba, 1, boot) != 0)
+    if (blk_read(drive_type, drive, part_lba, 1, boot) != 0)
         return -1;
 
     ntfs_boot_sector_t *bs = (ntfs_boot_sector_t *)boot;
@@ -500,6 +500,7 @@ int ntfs_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     if (!fs) return -4;
 
     fs->drive               = drive;
+    fs->drive_type          = drive_type;
     fs->part_lba            = part_lba;
     fs->sectors_per_cluster = bs->sectors_per_cluster;
     fs->cluster_size        = (uint32_t)bs->sectors_per_cluster * 512;

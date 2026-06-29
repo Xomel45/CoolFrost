@@ -4,6 +4,7 @@
 #include "ext2.h"
 #include "ntfs.h"
 #include "../drivers/ata.h"
+#include "../drivers/nvme.h"
 #include "../libc/mem.h"
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -145,19 +146,19 @@ int vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path) {
 
     if (ptype == 0x0B || ptype == 0x0C) {
         /* FAT32 or FAT32-LBA */
-        return fat32_mount(drive, parts[partition].lba_start,
+        return fat32_mount(DRIVE_TYPE_ATA, drive, parts[partition].lba_start,
                            &mount_table[slot]);
     }
 
     if (ptype == 0x83) {
         /* Linux — try ext2/3/4 */
-        return ext2_mount(drive, parts[partition].lba_start,
+        return ext2_mount(DRIVE_TYPE_ATA, drive, parts[partition].lba_start,
                           &mount_table[slot]);
     }
 
     if (ptype == 0x07) {
         /* NTFS / HPFS — try NTFS */
-        return ntfs_mount(drive, parts[partition].lba_start,
+        return ntfs_mount(DRIVE_TYPE_ATA, drive, parts[partition].lba_start,
                           &mount_table[slot]);
     }
 
@@ -188,7 +189,7 @@ int vfs_mount_gpt(uint8_t drive, uint64_t lba_start, uint64_t sector_count,
 
     /* Try FAT32: read the boot sector and check BPB markers */
     uint8_t boot[512];
-    if (ata_read_sectors(drive, lba_start, 1, boot) != 0) {
+    if (blk_read(DRIVE_TYPE_ATA, drive, lba_start, 1, boot) != 0) {
         return -2;
     }
 
@@ -199,26 +200,67 @@ int vfs_mount_gpt(uint8_t drive, uint64_t lba_start, uint64_t sector_count,
     uint16_t fs16  = *(uint16_t *)&boot[22];
 
     if (bps == 512 && rec == 0 && fs16 == 0) {
-        /* Likely FAT32 */
-        return fat32_mount(drive, lba_start, &mount_table[slot]);
+        return fat32_mount(DRIVE_TYPE_ATA, drive, lba_start, &mount_table[slot]);
     }
 
     /* Try NTFS: OEM ID "NTFS" at offset 3 */
     if (boot[3] == 'N' && boot[4] == 'T' &&
         boot[5] == 'F' && boot[6] == 'S') {
-        return ntfs_mount(drive, lba_start, &mount_table[slot]);
+        return ntfs_mount(DRIVE_TYPE_ATA, drive, lba_start, &mount_table[slot]);
     }
 
     /* Try ext2/3/4: superblock at byte 1024 (LBA+2), magic at offset 56 */
     uint8_t sb_check[512];
-    if (ata_read_sectors(drive, lba_start + 2, 1, sb_check) == 0) {
+    if (blk_read(DRIVE_TYPE_ATA, drive, lba_start + 2, 1, sb_check) == 0) {
         uint16_t ext_magic = *(uint16_t *)&sb_check[56];
         if (ext_magic == 0xEF53) {
-            return ext2_mount(drive, lba_start, &mount_table[slot]);
+            return ext2_mount(DRIVE_TYPE_ATA, drive, lba_start, &mount_table[slot]);
         }
     }
 
     /* Unsupported FS */
+    mount_table[slot].active = 0;
+    return -4;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  vfs_mount_nvme_gpt — mount a GPT partition from an NVMe drive
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+int vfs_mount_nvme_gpt(uint8_t nvme_idx, uint64_t lba_start, uint64_t sector_count,
+                       const char *mount_path) {
+    int slot = -1;
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (!mount_table[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    vfs_strcpy(mount_table[slot].path, mount_path, 64);
+    mount_table[slot].partition    = 0;
+    mount_table[slot].part_sectors = sector_count;
+
+    uint8_t boot[512];
+    if (blk_read(DRIVE_TYPE_NVME, nvme_idx, lba_start, 1, boot) != 0)
+        return -2;
+
+    uint16_t bps  = *(uint16_t *)&boot[11];
+    uint16_t rec  = *(uint16_t *)&boot[17];
+    uint16_t fs16 = *(uint16_t *)&boot[22];
+
+    if (bps == 512 && rec == 0 && fs16 == 0)
+        return fat32_mount(DRIVE_TYPE_NVME, nvme_idx, lba_start, &mount_table[slot]);
+
+    if (boot[3] == 'N' && boot[4] == 'T' &&
+        boot[5] == 'F' && boot[6] == 'S')
+        return ntfs_mount(DRIVE_TYPE_NVME, nvme_idx, lba_start, &mount_table[slot]);
+
+    uint8_t sb_check[512];
+    if (blk_read(DRIVE_TYPE_NVME, nvme_idx, lba_start + 2, 1, sb_check) == 0) {
+        uint16_t ext_magic = *(uint16_t *)&sb_check[56];
+        if (ext_magic == 0xEF53)
+            return ext2_mount(DRIVE_TYPE_NVME, nvme_idx, lba_start, &mount_table[slot]);
+    }
+
     mount_table[slot].active = 0;
     return -4;
 }

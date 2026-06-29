@@ -117,6 +117,10 @@ typedef struct {
     uint8_t  is_slave;          /* 0 = master, 1 = slave       */
 } ata_drive_t;
 
+/* ── Block device type codes ───────────────────────────────────────────── */
+#define DRIVE_TYPE_ATA   0
+#define DRIVE_TYPE_NVME  1
+
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 /* Initialize ATA: probes all 4 possible drives */
@@ -155,5 +159,14 @@ const char *gpt_type_name(const guid_t *type);
 
 /* Check if a GUID is all zeros (empty partition entry) */
 int guid_is_zero(const guid_t *g);
+
+/* ── Generic block device I/O (dispatches to ATA or NVMe) ─────────────── */
+int     blk_read(uint8_t type, uint8_t drv, uint64_t lba, uint8_t count, void *buf);
+int     blk_write(uint8_t type, uint8_t drv, uint64_t lba, uint8_t count, const void *buf);
+
+/* Generic partition detection — works for any block device type */
+uint8_t blk_detect_scheme(uint8_t type, uint8_t drv);
+int     blk_read_gpt(uint8_t type, uint8_t drv, gpt_partition_entry_t *entries, int max);
+int     blk_read_mbr_partitions(uint8_t type, uint8_t drv, mbr_partition_t parts[4]);
 
 #endif

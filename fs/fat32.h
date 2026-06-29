@@ -67,7 +67,8 @@ typedef struct __attribute__((packed)) {
 
 /* ── Internal state for a mounted FAT32 volume ─────────────────────────── */
 typedef struct {
-    uint8_t  drive;                 /* ATA drive index              */
+    uint8_t  drive;                 /* drive index                  */
+    uint8_t  drive_type;            /* DRIVE_TYPE_ATA / DRIVE_TYPE_NVME */
     uint64_t part_lba;              /* partition start LBA          */
     uint8_t  sectors_per_cluster;
     uint16_t reserved_sectors;
@@ -84,7 +85,7 @@ typedef struct {
 
 /* Mount a FAT32 partition.  Reads BPB, validates, fills mount_point_t.
  * Returns 0 on success, negative on error. */
-int fat32_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp);
+int fat32_mount(uint8_t drive_type, uint8_t drive, uint64_t part_lba, mount_point_t *mp);
 
 /* VFS callbacks — wired into vfs_node_t by fat32_mount / fat32_finddir */
 dirent_t   *fat32_readdir(vfs_node_t *node, uint32_t index);

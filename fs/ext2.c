@@ -50,8 +50,8 @@ static ext2_fs_t *alloc_fs(void) {
 /* Read one full block into `buf` */
 static int read_block(ext2_fs_t *fs, uint32_t block, void *buf) {
     uint64_t lba = fs->part_lba + (uint64_t)block * fs->sectors_per_block;
-    return ata_read_sectors(fs->drive, lba,
-                            (uint8_t)fs->sectors_per_block, buf);
+    return blk_read(fs->drive_type, fs->drive, lba,
+                    (uint8_t)fs->sectors_per_block, buf);
 }
 
 /* Read an inode by number.  Uses meta_buf internally. */
@@ -326,10 +326,10 @@ int ext2_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
  *  ext2_mount — mount an ext2/3/4 partition (read-only)
  * ══════════════════════════════════════════════════════════════════════════ */
 
-int ext2_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
+int ext2_mount(uint8_t drive_type, uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     /* Superblock starts at byte 1024 = LBA+2 (two 512-byte sectors) */
     uint8_t sb_raw[1024];
-    if (ata_read_sectors(drive, part_lba + 2, 2, sb_raw) != 0)
+    if (blk_read(drive_type, drive, part_lba + 2, 2, sb_raw) != 0)
         return -1;
 
     ext2_superblock_t *sb = (ext2_superblock_t *)sb_raw;
@@ -341,6 +341,7 @@ int ext2_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp) {
     if (!fs) return -3;
 
     fs->drive            = drive;
+    fs->drive_type       = drive_type;
     fs->part_lba         = part_lba;
     fs->block_size       = 1024u << sb->s_log_block_size;
     fs->sectors_per_block = fs->block_size / 512;

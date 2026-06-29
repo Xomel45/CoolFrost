@@ -149,6 +149,7 @@ typedef struct __attribute__((packed)) {
 /* ── Internal mounted state ───────────────────────────────────────────── */
 typedef struct {
     uint8_t  drive;
+    uint8_t  drive_type;   /* DRIVE_TYPE_ATA / DRIVE_TYPE_NVME */
     uint64_t part_lba;
     uint8_t  sectors_per_cluster;
     uint32_t cluster_size;
@@ -159,7 +160,7 @@ typedef struct {
 } ntfs_fs_t;
 
 /* ── Public API ───────────────────────────────────────────────────────── */
-int         ntfs_mount(uint8_t drive, uint64_t part_lba, mount_point_t *mp);
+int         ntfs_mount(uint8_t drive_type, uint8_t drive, uint64_t part_lba, mount_point_t *mp);
 dirent_t   *ntfs_readdir(vfs_node_t *node, uint32_t index);
 vfs_node_t *ntfs_finddir(vfs_node_t *node, const char *name);
 int         ntfs_read(vfs_node_t *node, uint64_t offset, uint32_t size,

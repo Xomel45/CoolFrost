@@ -15,6 +15,7 @@
 #include "../drivers/pci.h"
 #include "../drivers/gpu.h"
 #include "../drivers/ata.h"
+#include "../drivers/nvme.h"
 #include "../cpu/apic.h"
 #include "../cpu/smp.h"
 #include "../cpu/sched.h"
@@ -105,8 +106,9 @@ void kstart(uintptr_t addr) {
     globals.kernel_version = "0.1A";
     globals.kernel_codename = "Dark Rain";
 
-    /* Init ATA and VFS */
+    /* Init storage and VFS */
     ata_init();
+    nvme_init();
     vfs_init();
 
     perform_tests();
@@ -178,6 +180,21 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         printf("  %s  (%u bytes)\n", de->name, de->size);
                 }
                 vfs_close(fd);
+            }
+        }
+    }
+
+    /* Auto-mount first NVMe GPT partition at /nvme0p0 */
+    if (nvme_drive_count() > 0) {
+        gpt_partition_entry_t *gparts = gpt_parts_buf;
+        int gn = blk_read_gpt(DRIVE_TYPE_NVME, 0, gparts, MAX_GPT_PARTS);
+        int mounted = 0;
+        for (int p = 0; p < gn && !mounted; p++) {
+            uint64_t lba   = gparts[p].first_lba;
+            uint64_t count = gparts[p].last_lba - gparts[p].first_lba + 1;
+            if (vfs_mount_nvme_gpt(0, lba, count, "/nvme0p0") == 0) {
+                printf("Mounted NVMe GPT partition %d at /nvme0p0\n", p);
+                mounted = 1;
             }
         }
     }
@@ -260,43 +277,58 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 }
             }
         } else if (strcmp(cmd_buf, "lsblk") == 0) {
-            uint8_t count = ata_drive_count();
-            if (count == 0) {
-                kprint("No ATA drives detected\n");
-            } else {
-                for (uint8_t i = 0; i < count; i++) {
-                    ata_drive_t *drv = ata_get_drive(i);
-                    if (!drv || !drv->present) continue;
-                    uint32_t mb = drv->sectors / 2048;
+            uint8_t ata_count  = ata_drive_count();
+            uint8_t nvme_count = nvme_drive_count();
+            if (ata_count == 0 && nvme_count == 0) {
+                kprint("No block devices detected\n");
+            }
+            for (uint8_t i = 0; i < ata_count; i++) {
+                ata_drive_t *drv = ata_get_drive(i);
+                if (!drv || !drv->present) continue;
+                uint32_t mb = drv->sectors / 2048;
 
-                    uint8_t scheme = ata_detect_scheme(i);
-                    const char *scheme_name = (scheme == PART_SCHEME_GPT) ? "GPT" :
-                                              (scheme == PART_SCHEME_MBR) ? "MBR" : "???";
-                    printf("ata%d: %s  %u MB  [%s]\n", i, drv->model, mb, scheme_name);
+                uint8_t scheme = ata_detect_scheme(i);
+                const char *scheme_name = (scheme == PART_SCHEME_GPT) ? "GPT" :
+                                          (scheme == PART_SCHEME_MBR) ? "MBR" : "???";
+                printf("ata%d: %s  %u MB  [%s]\n", i, drv->model, mb, scheme_name);
 
-                    if (scheme == PART_SCHEME_GPT) {
-                        gpt_partition_entry_t *gparts = gpt_parts_buf;
-                        int gn = ata_read_gpt(i, gparts, MAX_GPT_PARTS);
-                        for (int p = 0; p < gn; p++) {
-                            uint64_t lba = gparts[p].first_lba;
-                            uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
-                            uint64_t pmb = secs / 2048;
-                            printf("  p%d: %s  LBA %lu  %lu MB\n",
-                                    p, gpt_type_name(&gparts[p].type_guid),
-                                    lba, pmb);
-                        }
-                    } else if (scheme == PART_SCHEME_MBR) {
-                        mbr_partition_t parts[4];
-                        if (ata_read_partitions(i, parts) == 0) {
-                            for (int p = 0; p < 4; p++) {
-                                if (parts[p].type == 0x00) continue;
-                                uint32_t pmb = parts[p].sector_count / 2048;
-                                printf("  p%d: %s  LBA %u  %u MB\n",
-                                        p, partition_type_name(parts[p].type),
-                                        parts[p].lba_start, pmb);
-                            }
+                if (scheme == PART_SCHEME_GPT) {
+                    gpt_partition_entry_t *gparts = gpt_parts_buf;
+                    int gn = ata_read_gpt(i, gparts, MAX_GPT_PARTS);
+                    for (int p = 0; p < gn; p++) {
+                        uint64_t lba  = gparts[p].first_lba;
+                        uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
+                        uint64_t pmb  = secs / 2048;
+                        printf("  p%d: %s  LBA %lu  %lu MB\n",
+                                p, gpt_type_name(&gparts[p].type_guid), lba, pmb);
+                    }
+                } else if (scheme == PART_SCHEME_MBR) {
+                    mbr_partition_t parts[4];
+                    if (ata_read_partitions(i, parts) == 0) {
+                        for (int p = 0; p < 4; p++) {
+                            if (parts[p].type == 0x00) continue;
+                            uint32_t pmb = parts[p].sector_count / 2048;
+                            printf("  p%d: %s  LBA %u  %u MB\n",
+                                    p, partition_type_name(parts[p].type),
+                                    parts[p].lba_start, pmb);
                         }
                     }
+                }
+            }
+            for (uint8_t i = 0; i < nvme_count; i++) {
+                nvme_drive_t *drv = nvme_get_drive(i);
+                if (!drv || !drv->present) continue;
+                uint64_t mb = drv->sectors / 2048;
+                printf("nvme%d: %s  %lu MB  (LBA=%u B)\n",
+                       i, drv->model, mb, drv->lba_size);
+                gpt_partition_entry_t *gparts = gpt_parts_buf;
+                int gn = blk_read_gpt(DRIVE_TYPE_NVME, i, gparts, MAX_GPT_PARTS);
+                for (int p = 0; p < gn; p++) {
+                    uint64_t lba  = gparts[p].first_lba;
+                    uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
+                    uint64_t pmb  = secs / 2048;
+                    printf("  p%d: %s  LBA %lu  %lu MB\n",
+                           p, gpt_type_name(&gparts[p].type_guid), lba, pmb);
                 }
             }
         } else if (starts_with(cmd_buf, "mount ")) {
@@ -461,7 +493,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "spkctl - PC speaker controller\n"
                         "ls - list files on mounted disk\n"
                         "cat <file> - show file contents\n"
-                        "lsblk - list ATA drives and partitions\n"
+                        "lsblk - list ATA/NVMe drives and partitions\n"
                         "mount <drv> <part> <path> - mount MBR partition\n"
                         "mount <drv> gpt <idx> <path> - mount GPT partition\n"
                         "umount <path> - unmount a filesystem\n"

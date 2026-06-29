@@ -399,6 +399,93 @@ int ata_read_gpt(uint8_t drive_idx, gpt_partition_entry_t *entries, int max) {
 
 /* ── MBR partition type names ─────────────────────────────────────────── */
 
+/* ── Generic block device dispatch ─────────────────────────────────────── */
+
+/* Resolved at link time from nvme.c */
+extern int nvme_read_sectors(uint8_t drv, uint64_t lba, uint8_t count, void *buf);
+extern int nvme_write_sectors(uint8_t drv, uint64_t lba, uint8_t count, const void *buf);
+
+int blk_read(uint8_t type, uint8_t drv, uint64_t lba, uint8_t count, void *buf) {
+    if (type == DRIVE_TYPE_NVME)
+        return nvme_read_sectors(drv, lba, count, buf);
+    return ata_read_sectors(drv, lba, count, buf);
+}
+
+int blk_write(uint8_t type, uint8_t drv, uint64_t lba, uint8_t count, const void *buf) {
+    if (type == DRIVE_TYPE_NVME)
+        return nvme_write_sectors(drv, lba, count, buf);
+    return ata_write_sectors(drv, lba, count, buf);
+}
+
+uint8_t blk_detect_scheme(uint8_t type, uint8_t drv) {
+    uint8_t mbr[ATA_SECTOR_SIZE];
+    if (blk_read(type, drv, 0, 1, mbr) != 0)
+        return PART_SCHEME_NONE;
+    if (mbr[510] != 0x55 || mbr[511] != 0xAA)
+        return PART_SCHEME_NONE;
+    mbr_partition_t *parts = (mbr_partition_t *)&mbr[446];
+    for (int i = 0; i < 4; i++) {
+        if (parts[i].type == 0xEE)
+            return PART_SCHEME_GPT;
+    }
+    return PART_SCHEME_MBR;
+}
+
+int blk_read_mbr_partitions(uint8_t type, uint8_t drv, mbr_partition_t parts[4]) {
+    uint8_t mbr[ATA_SECTOR_SIZE];
+    if (blk_read(type, drv, 0, 1, mbr) != 0)
+        return -1;
+    if (mbr[510] != 0x55 || mbr[511] != 0xAA)
+        return -2;
+    memcpy((uint8_t *)&mbr[446], (uint8_t *)parts, sizeof(mbr_partition_t) * 4);
+    return 0;
+}
+
+int blk_read_gpt(uint8_t type, uint8_t drv, gpt_partition_entry_t *entries, int max) {
+    uint8_t hdr_buf[ATA_SECTOR_SIZE];
+    if (blk_read(type, drv, 1, 1, hdr_buf) != 0)
+        return -1;
+
+    gpt_header_t *hdr = (gpt_header_t *)hdr_buf;
+    if (hdr->signature[0] != 'E' || hdr->signature[1] != 'F' ||
+        hdr->signature[2] != 'I' || hdr->signature[3] != ' ' ||
+        hdr->signature[4] != 'P' || hdr->signature[5] != 'A' ||
+        hdr->signature[6] != 'R' || hdr->signature[7] != 'T')
+        return -2;
+
+    uint32_t num_entries  = hdr->num_partition_entries;
+    uint32_t entry_size   = hdr->partition_entry_size;
+    uint64_t entry_lba    = hdr->partition_entry_lba;
+
+    if (entry_size < 128 || entry_size > 512)
+        return -3;
+    if (num_entries > (uint32_t)max)
+        num_entries = (uint32_t)max;
+
+    uint32_t entries_per_sector = ATA_SECTOR_SIZE / entry_size;
+    int found = 0;
+    uint8_t sec_buf[ATA_SECTOR_SIZE];
+
+    for (uint32_t i = 0; i < num_entries; i++) {
+        uint64_t sec_idx = i / entries_per_sector;
+        uint32_t sec_off = (i % entries_per_sector) * entry_size;
+
+        if (sec_off == 0) {
+            if (blk_read(type, drv, entry_lba + sec_idx, 1, sec_buf) != 0)
+                return -1;
+        }
+
+        gpt_partition_entry_t *pe = (gpt_partition_entry_t *)&sec_buf[sec_off];
+        if (guid_is_zero(&pe->type_guid))
+            continue;
+
+        /* memcpy(source, dest, n) — CoolFrost order */
+        memcpy((uint8_t *)pe, (uint8_t *)&entries[found], (int)sizeof(gpt_partition_entry_t));
+        found++;
+    }
+    return found;
+}
+
 const char *partition_type_name(uint8_t type) {
     switch (type) {
         case 0x00: return "Empty";
