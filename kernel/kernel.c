@@ -23,6 +23,8 @@
 #include "../fs/fat32.h"
 #include "../fs/ext2.h"
 #include "../fs/ntfs.h"
+#include "../net/net.h"
+#include "../net/icmp.h"
 
 #include <stdint.h>
 
@@ -110,6 +112,7 @@ void kstart(uintptr_t addr) {
     ata_init();
     nvme_init();
     vfs_init();
+    net_init();
 
     perform_tests();
 }
@@ -401,20 +404,64 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             while (*host == ' ') host++;
             if (!*host) {
                 kprint_attr("Usage: ping <host>\n", RED_FG);
+            } else if (!net_up) {
+                kprint_attr("ping: network not available\n", RED_FG);
             } else {
-                printf("Pinging %s with 32 bytes of data:\n", host);
-                static const uint32_t rtts[4] = {1, 2, 1, 3};
-                for (int i = 0; i < 4; i++) {
-                    sleep_ms(500);
-                    printf("Reply from %s: bytes=32 time=%ums TTL=64\n",
-                           host, rtts[i]);
+                ip_addr_t dst;
+                if (net_parse_ip(host, &dst) != 0) {
+                    kprint_attr("ping: invalid IP address\n", RED_FG);
+                } else {
+                    printf("Pinging %s with 32 bytes of data:\n", host);
+                    int sent = 0, recv = 0, min_rtt = 9999, max_rtt = 0, sum_rtt = 0;
+                    for (int i = 0; i < 4; i++) {
+                        int rtt = icmp_ping(&dst, 2000);
+                        sent++;
+                        if (rtt >= 0) {
+                            recv++;
+                            printf("Reply from %s: bytes=32 time=%dms TTL=64\n",
+                                   host, rtt);
+                            if (rtt < min_rtt) min_rtt = rtt;
+                            if (rtt > max_rtt) max_rtt = rtt;
+                            sum_rtt += rtt;
+                        } else {
+                            printf("Request timed out.\n");
+                        }
+                        if (i < 3) sleep_ms(1000);
+                    }
+                    int lost_pct = ((sent - recv) * 100) / sent;
+                    printf("\nPing statistics for %s:\n"
+                           "  Packets: Sent = %d, Received = %d, Lost = %d (%d%% loss)\n",
+                           host, sent, recv, sent - recv, lost_pct);
+                    if (recv > 0) {
+                        printf("Approximate round trip times in milli-seconds:\n"
+                               "  Minimum = %dms, Maximum = %dms, Average = %dms\n",
+                               min_rtt, max_rtt, sum_rtt / recv);
+                    }
                 }
-                kprint("\nPing statistics for ");
-                kprint((char *)host);
-                kprint(":\n"
-                       "  Packets: Sent = 4, Received = 4, Lost = 0 (0% loss)\n"
-                       "Approximate round trip times in milli-seconds:\n"
-                       "  Minimum = 1ms, Maximum = 3ms, Average = 1ms\n");
+            }
+        } else if (strcmp(cmd_buf, "ifconfig") == 0) {
+            if (!net_up) {
+                kprint("eth0: network not up\n");
+            } else {
+                printf("eth0: MAC  %02x:%02x:%02x:%02x:%02x:%02x\n",
+                       net_mac.b[0], net_mac.b[1], net_mac.b[2],
+                       net_mac.b[3], net_mac.b[4], net_mac.b[5]);
+                printf("      IP   %d.%d.%d.%d\n",
+                       net_ip.b[0],   net_ip.b[1],   net_ip.b[2],   net_ip.b[3]);
+                printf("      Mask %d.%d.%d.%d\n",
+                       net_mask.b[0], net_mask.b[1], net_mask.b[2], net_mask.b[3]);
+                printf("      GW   %d.%d.%d.%d\n",
+                       net_gw.b[0],   net_gw.b[1],   net_gw.b[2],   net_gw.b[3]);
+            }
+        } else if (strcmp(cmd_buf, "dhcp") == 0) {
+            extern int dhcp_discover(void);
+            kprint("Running DHCP...\n");
+            if (dhcp_discover() == 0) {
+                net_up = 1;
+                printf("Got IP: %d.%d.%d.%d\n",
+                       net_ip.b[0], net_ip.b[1], net_ip.b[2], net_ip.b[3]);
+            } else {
+                kprint_attr("DHCP timeout\n", RED_FG);
             }
         } else if (strcmp(cmd_buf, "cpucount") == 0) {
             printf("Online CPUs: %d\n", smp_cpu_count);
@@ -497,7 +544,9 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "mount <drv> <part> <path> - mount MBR partition\n"
                         "mount <drv> gpt <idx> <path> - mount GPT partition\n"
                         "umount <path> - unmount a filesystem\n"
-                        "ping <host> - ping a host (simulated)\n"
+                        "ping <ip>  - send ICMP echo (real)\n"
+                        "ifconfig   - show network interface\n"
+                        "dhcp       - renew DHCP lease\n"
                         "poweroff - shut down the system\n", GREEN_FG);
         } else if (strcmp(cmd_buf, "reboot") == 0) {
             reboot();

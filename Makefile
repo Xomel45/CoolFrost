@@ -1,5 +1,5 @@
-C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c fs/*.c)
-HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h fs/*.h)
+C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c fs/*.c net/*.c)
+HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h fs/*.h net/*.h)
 OBJ       = ${C_SOURCES:.c=.o} cpu/interrupt.o drivers/cpuid-detect.o \
             boot/ap_trampoline_embed.o
 
@@ -32,6 +32,14 @@ iso: kernel.elf
 run-grub: kernel.elf
 	qemu-system-x86_64 -m 512M -kernel kernel.elf \
 	    -drive file=hdd.img,format=raw,if=ide \
+	    -audiodev pa,id=speaker \
+	    -machine pcspk-audiodev=speaker \
+	    -enable-kvm -cpu host -vga std
+
+run-net: kernel.elf
+	qemu-system-x86_64 -m 512M -kernel kernel.elf \
+	    -drive file=hdd.img,format=raw,if=ide \
+	    -nic user,model=e1000 \
 	    -audiodev pa,id=speaker \
 	    -machine pcspk-audiodev=speaker \
 	    -enable-kvm -cpu host -vga std
@@ -72,5 +80,5 @@ check: ${C_SOURCES}
 
 clean:
 	rm -rf *.iso *.dis *.o *.elf hdd.img
-	rm -rf kernel/*.o boot/*.o boot/*.bin drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o
+	rm -rf kernel/*.o boot/*.o boot/*.bin drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o net/*.o
 	rm -rf iso/
