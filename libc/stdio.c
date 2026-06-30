@@ -241,73 +241,97 @@ int sprintf(char *s, const char *format, ...) {
 }
 
 /* ── vsnprintf / snprintf ───────────────────────────────────────────────── *
- * n  = max bytes to write including the null terminator (0 = dry-run).     *
- * Returns the number of chars that would have been written (excl. '\0').   */
+ * n  = max bytes including null terminator (SIZE_MAX = unbounded).          *
+ * Returns chars that WOULD have been written (C99 semantics).               *
+ * Supports: flags (-,0), width, length modifier (l), specifiers duxXocsfp% */
 int vsnprintf(char *s, size_t n, const char *fmt, va_list args) {
     size_t total = 0;
 
-/* Write one char into the bounded buffer */
-#define _E(c) do { \
-    if (n > 0 && total < n - 1) s[total] = (char)(c); \
+/* Emit one character into the bounded output buffer */
+#define _EC(c) do { \
+    if (n > 1 && total < n - 1) s[total] = (char)(c); \
     total++; \
 } while (0)
 
-/* Write a NUL-terminated string */
-#define _ES(p) do { \
-    for (const char *_q = (const char *)(p); *_q; _q++) _E(*_q); \
+/* Emit value string 'vp' with optional width / alignment / padding */
+#define _EMIT_PADDED(vp, width, zero_pad, left_align) do { \
+    const char *_v = (vp); \
+    size_t _vl = 0; \
+    for (const char *_p = _v; *_p; _p++) _vl++; \
+    if (!(left_align) && (int)_vl < (width)) { \
+        char _pad = (zero_pad) ? '0' : ' '; \
+        for (int _i = 0; _i < (width) - (int)_vl; _i++) _EC(_pad); \
+    } \
+    for (const char *_p = _v; *_p; _p++) _EC(*_p); \
+    if ((left_align) && (int)_vl < (width)) { \
+        for (int _i = 0; _i < (width) - (int)_vl; _i++) _EC(' '); \
+    } \
 } while (0)
 
     while (*fmt) {
-        if (*fmt != '%') { _E(*fmt++); continue; }
+        if (*fmt != '%') { _EC(*fmt++); continue; }
         fmt++;
 
-        /* %l prefix */
-        if (*fmt == 'l') {
-            fmt++;
-            char _buf[32];
-            if (*fmt == 'd') {
-                itoa((int64_t)va_arg(args, int64_t), _buf, 10); _ES(_buf);
-            } else if (*fmt == 'u') {
-                itoa((int64_t)va_arg(args, uint64_t), _buf, 10); _ES(_buf);
-            } else if (*fmt == 'x') {
-                itoa((int64_t)va_arg(args, uint64_t), _buf, 16); _ES(_buf);
-            } else if (*fmt == 'o') {
-                itoa((int64_t)va_arg(args, uint64_t), _buf, 8);  _ES(_buf);
-            }
-            fmt++; continue;
+        /* ── Parse flags ── */
+        int left_align = 0, zero_pad = 0;
+        for (;;) {
+            if (*fmt == '-') { left_align = 1; zero_pad = 0; fmt++; }
+            else if (*fmt == '0' && !left_align) { zero_pad = 1; fmt++; }
+            else break;
         }
 
-        char _buf[64];
+        /* ── Parse width ── */
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') width = width * 10 + (*fmt++ - '0');
+
+        /* ── Parse length modifier ── */
+        int is_long = 0;
+        if (*fmt == 'l') { is_long = 1; fmt++; }
+
+        /* ── Build value string, then emit with padding ── */
+        char buf[72];
+        const char *val = buf;
+        buf[0] = '\0';
+
         if (*fmt == 'd') {
-            itoa((int64_t)va_arg(args, int32_t), _buf, 10); _ES(_buf);
+            int64_t v = is_long ? va_arg(args, int64_t) : (int64_t)va_arg(args, int32_t);
+            itoa(v, buf, 10);
         } else if (*fmt == 'u') {
-            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 10); _ES(_buf);
+            uint64_t v = is_long ? va_arg(args, uint64_t) : (uint64_t)va_arg(args, uint32_t);
+            itoa((int64_t)v, buf, 10);
         } else if (*fmt == 'x') {
-            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 16); _ES(_buf);
+            uint64_t v = is_long ? va_arg(args, uint64_t) : (uint64_t)va_arg(args, uint32_t);
+            itoa((int64_t)v, buf, 16);
         } else if (*fmt == 'X') {
-            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 16);
-            for (char *p = _buf; *p; p++) _E(toupper(*p));
+            uint64_t v = is_long ? va_arg(args, uint64_t) : (uint64_t)va_arg(args, uint32_t);
+            itoa((int64_t)v, buf, 16);
+            for (char *p = buf; *p; p++) *p = (char)toupper((unsigned char)*p);
         } else if (*fmt == 'o') {
-            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 8); _ES(_buf);
+            uint64_t v = is_long ? va_arg(args, uint64_t) : (uint64_t)va_arg(args, uint32_t);
+            itoa((int64_t)v, buf, 8);
         } else if (*fmt == 'f') {
-            ftoa(va_arg(args, double), _buf, 10, 6); _ES(_buf);
+            ftoa(va_arg(args, double), buf, 10, 6);
         } else if (*fmt == 'p') {
-            _E('0'); _E('x');
-            itoa((int64_t)(uintptr_t)va_arg(args, void *), _buf, 16); _ES(_buf);
+            buf[0] = '0'; buf[1] = 'x';
+            itoa((int64_t)(uintptr_t)va_arg(args, void *), buf + 2, 16);
         } else if (*fmt == 'c') {
-            _E((char)va_arg(args, int));
+            buf[0] = (char)va_arg(args, int); buf[1] = '\0';
         } else if (*fmt == 's') {
-            const char *v = va_arg(args, const char *);
-            if (!v) v = "(null)";
-            _ES(v);
+            val = va_arg(args, const char *);
+            if (!val) val = "(null)";
         } else if (*fmt == '%') {
-            _E('%');
+            buf[0] = '%'; buf[1] = '\0';
+        } else {
+            /* Unknown specifier — pass through literally */
+            buf[0] = '%'; buf[1] = *fmt; buf[2] = '\0';
         }
         fmt++;
+
+        _EMIT_PADDED(val, width, zero_pad, left_align);
     }
 
-#undef _E
-#undef _ES
+#undef _EC
+#undef _EMIT_PADDED
 
     if (n > 0) s[total < n ? total : n - 1] = '\0';
     return (int)total;
