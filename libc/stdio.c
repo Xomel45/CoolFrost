@@ -2,6 +2,7 @@
 #include "./ctype.h"
 #include "../drivers/screen.h"
 #include <stdint.h>
+#include <stddef.h>
 #include <stdarg.h>
 #include "./stdlib.h"
 
@@ -237,4 +238,85 @@ int sprintf(char *s, const char *format, ...) {
     *s = '\0';
     va_end(args);
     return s - start;
+}
+
+/* ── vsnprintf / snprintf ───────────────────────────────────────────────── *
+ * n  = max bytes to write including the null terminator (0 = dry-run).     *
+ * Returns the number of chars that would have been written (excl. '\0').   */
+int vsnprintf(char *s, size_t n, const char *fmt, va_list args) {
+    size_t total = 0;
+
+/* Write one char into the bounded buffer */
+#define _E(c) do { \
+    if (n > 0 && total < n - 1) s[total] = (char)(c); \
+    total++; \
+} while (0)
+
+/* Write a NUL-terminated string */
+#define _ES(p) do { \
+    for (const char *_q = (const char *)(p); *_q; _q++) _E(*_q); \
+} while (0)
+
+    while (*fmt) {
+        if (*fmt != '%') { _E(*fmt++); continue; }
+        fmt++;
+
+        /* %l prefix */
+        if (*fmt == 'l') {
+            fmt++;
+            char _buf[32];
+            if (*fmt == 'd') {
+                itoa((int64_t)va_arg(args, int64_t), _buf, 10); _ES(_buf);
+            } else if (*fmt == 'u') {
+                itoa((int64_t)va_arg(args, uint64_t), _buf, 10); _ES(_buf);
+            } else if (*fmt == 'x') {
+                itoa((int64_t)va_arg(args, uint64_t), _buf, 16); _ES(_buf);
+            } else if (*fmt == 'o') {
+                itoa((int64_t)va_arg(args, uint64_t), _buf, 8);  _ES(_buf);
+            }
+            fmt++; continue;
+        }
+
+        char _buf[64];
+        if (*fmt == 'd') {
+            itoa((int64_t)va_arg(args, int32_t), _buf, 10); _ES(_buf);
+        } else if (*fmt == 'u') {
+            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 10); _ES(_buf);
+        } else if (*fmt == 'x') {
+            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 16); _ES(_buf);
+        } else if (*fmt == 'X') {
+            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 16);
+            for (char *p = _buf; *p; p++) _E(toupper(*p));
+        } else if (*fmt == 'o') {
+            itoa((int64_t)(uint64_t)va_arg(args, uint32_t), _buf, 8); _ES(_buf);
+        } else if (*fmt == 'f') {
+            ftoa(va_arg(args, double), _buf, 10, 6); _ES(_buf);
+        } else if (*fmt == 'p') {
+            _E('0'); _E('x');
+            itoa((int64_t)(uintptr_t)va_arg(args, void *), _buf, 16); _ES(_buf);
+        } else if (*fmt == 'c') {
+            _E((char)va_arg(args, int));
+        } else if (*fmt == 's') {
+            const char *v = va_arg(args, const char *);
+            if (!v) v = "(null)";
+            _ES(v);
+        } else if (*fmt == '%') {
+            _E('%');
+        }
+        fmt++;
+    }
+
+#undef _E
+#undef _ES
+
+    if (n > 0) s[total < n ? total : n - 1] = '\0';
+    return (int)total;
+}
+
+int snprintf(char *s, size_t n, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int r = vsnprintf(s, n, fmt, args);
+    va_end(args);
+    return r;
 }

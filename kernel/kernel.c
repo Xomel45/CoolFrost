@@ -18,6 +18,8 @@
 #include "../drivers/nvme.h"
 #include "../drivers/ahci.h"
 #include "../drivers/serial.h"
+#include "../drivers/virtio_blk.h"
+#include "../drivers/ac97.h"
 #include "../cpu/apic.h"
 #include "../cpu/smp.h"
 #include "../cpu/sched.h"
@@ -117,6 +119,8 @@ void kstart(uintptr_t addr) {
     ata_init();
     nvme_init();
     ahci_init();
+    vblk_init();
+    ac97_init();
     vfs_init();
     net_init();
 
@@ -203,6 +207,21 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             uint64_t count = gparts[p].last_lba - gparts[p].first_lba + 1;
             if (vfs_mount_nvme_gpt(0, lba, count, "/nvme0p0") == 0) {
                 printf("Mounted NVMe GPT partition %d at /nvme0p0\n", p);
+                mounted = 1;
+            }
+        }
+    }
+
+    /* Auto-mount first VirtIO-blk GPT partition at /vda0 */
+    if (vblk_drive_count() > 0) {
+        gpt_partition_entry_t *gparts = gpt_parts_buf;
+        int gn = blk_read_gpt(DRIVE_TYPE_VBLK, 0, gparts, MAX_GPT_PARTS);
+        int mounted = 0;
+        for (int p = 0; p < gn && !mounted; p++) {
+            uint64_t lba   = gparts[p].first_lba;
+            uint64_t count = gparts[p].last_lba - gparts[p].first_lba + 1;
+            if (vfs_mount_vblk_gpt(0, lba, count, "/vda0") == 0) {
+                printf("Mounted VirtIO GPT partition %d at /vda0\n", p);
                 mounted = 1;
             }
         }
@@ -304,7 +323,8 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             uint8_t ata_count  = ata_drive_count();
             uint8_t nvme_count = nvme_drive_count();
             uint8_t ahci_count = (uint8_t)ahci_drive_count();
-            if (ata_count == 0 && nvme_count == 0 && ahci_count == 0) {
+            uint8_t vblk_count = (uint8_t)vblk_drive_count();
+            if (!ata_count && !nvme_count && !ahci_count && !vblk_count) {
                 kprint("No block devices detected\n");
             }
             for (uint8_t i = 0; i < ata_count; i++) {
@@ -363,6 +383,21 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 printf("sata%d: port %d  %lu MB\n", i, drv->port_idx, mb);
                 gpt_partition_entry_t *gparts = gpt_parts_buf;
                 int gn = blk_read_gpt(DRIVE_TYPE_AHCI, i, gparts, MAX_GPT_PARTS);
+                for (int p = 0; p < gn; p++) {
+                    uint64_t lba  = gparts[p].first_lba;
+                    uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
+                    uint64_t pmb  = secs / 2048;
+                    printf("  p%d: %s  LBA %lu  %lu MB\n",
+                           p, gpt_type_name(&gparts[p].type_guid), lba, pmb);
+                }
+            }
+            for (uint8_t i = 0; i < vblk_count; i++) {
+                vblk_drive_t *drv = vblk_get_drive(i);
+                if (!drv || !drv->active) continue;
+                uint64_t mb = drv->sector_count / 2048;
+                printf("vblk%d: %lu MB\n", i, mb);
+                gpt_partition_entry_t *gparts = gpt_parts_buf;
+                int gn = blk_read_gpt(DRIVE_TYPE_VBLK, i, gparts, MAX_GPT_PARTS);
                 for (int p = 0; p < gn; p++) {
                     uint64_t lba  = gparts[p].first_lba;
                     uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
@@ -476,6 +511,21 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     }
                 }
             }
+        } else if (starts_with(cmd_buf, "beep")) {
+            /* beep [freq] [ms] */
+            const char *arg = cmd_buf + 4;
+            while (*arg == ' ') arg++;
+            uint32_t freq = 440u, ms = 500u;
+            if (*arg >= '0' && *arg <= '9') {
+                freq = 0;
+                while (*arg >= '0' && *arg <= '9') freq = freq*10u + (uint32_t)(*arg++ - '0');
+                while (*arg == ' ') arg++;
+                if (*arg >= '0' && *arg <= '9') {
+                    ms = 0;
+                    while (*arg >= '0' && *arg <= '9') ms = ms*10u + (uint32_t)(*arg++ - '0');
+                }
+            }
+            ac97_beep(freq, ms);
         } else if (strcmp(cmd_buf, "ifconfig") == 0) {
             if (!net_up) {
                 kprint("eth0: network not up\n");

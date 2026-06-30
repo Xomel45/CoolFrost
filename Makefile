@@ -47,6 +47,20 @@ run-net: kernel.elf
 sata.img:
 	dd if=/dev/zero of=sata.img bs=1M count=256
 
+vdisk.img:
+	dd if=/dev/zero of=vdisk.img bs=1M count=256
+
+run-virtio: kernel.elf
+	qemu-system-x86_64 -m 512M -kernel kernel.elf \
+	    -drive file=hdd.img,format=raw,if=ide \
+	    -drive file=vdisk.img,format=raw,if=none,id=vdisk0 \
+	    -device virtio-blk-pci,drive=vdisk0 \
+	    -audiodev pa,id=speaker \
+	    -device AC97,audiodev=speaker \
+	    -machine pcspk-audiodev=speaker \
+	    -serial stdio \
+	    -enable-kvm -cpu host -vga std
+
 run-ahci: kernel.elf
 	qemu-system-x86_64 -m 512M -kernel kernel.elf \
 	    -drive file=hdd.img,format=raw,if=ide \

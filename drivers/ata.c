@@ -406,16 +406,20 @@ extern int nvme_read_sectors (uint8_t drv, uint64_t lba, uint8_t count, void *bu
 extern int nvme_write_sectors(uint8_t drv, uint64_t lba, uint8_t count, const void *buf);
 extern int ahci_read_sectors (uint8_t drv, uint64_t lba, uint8_t count, void *buf);
 extern int ahci_write_sectors(uint8_t drv, uint64_t lba, uint8_t count, const void *buf);
+extern int vblk_read_sectors (uint8_t drv, uint64_t lba, uint8_t count, void *buf);
+extern int vblk_write_sectors(uint8_t drv, uint64_t lba, uint8_t count, const void *buf);
 
 int blk_read(uint8_t type, uint8_t drv, uint64_t lba, uint8_t count, void *buf) {
     if (type == DRIVE_TYPE_NVME) return nvme_read_sectors(drv, lba, count, buf);
     if (type == DRIVE_TYPE_AHCI) return ahci_read_sectors(drv, lba, count, buf);
+    if (type == DRIVE_TYPE_VBLK) return vblk_read_sectors(drv, lba, count, buf);
     return ata_read_sectors(drv, lba, count, buf);
 }
 
 int blk_write(uint8_t type, uint8_t drv, uint64_t lba, uint8_t count, const void *buf) {
     if (type == DRIVE_TYPE_NVME) return nvme_write_sectors(drv, lba, count, buf);
     if (type == DRIVE_TYPE_AHCI) return ahci_write_sectors(drv, lba, count, buf);
+    if (type == DRIVE_TYPE_VBLK) return vblk_write_sectors(drv, lba, count, buf);
     return ata_write_sectors(drv, lba, count, buf);
 }
 

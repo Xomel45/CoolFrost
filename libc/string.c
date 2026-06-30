@@ -80,6 +80,110 @@ int strcmp(char s1[], char s2[]) {
     return s1[i] - s2[i];
 }
 
+/* ── New string functions ──────────────────────────────────────────────── */
+
+char *strcpy(char *dst, const char *src) {
+    char *d = dst;
+    while ((*d++ = *src++));
+    return dst;
+}
+
+char *strncpy(char *dst, const char *src, size_t n) {
+    size_t i;
+    for (i = 0; i < n && src[i]; i++) dst[i] = src[i];
+    for (; i < n; i++) dst[i] = '\0';
+    return dst;
+}
+
+char *strcat(char *dst, const char *src) {
+    char *d = dst + strlen(dst);
+    while ((*d++ = *src++));
+    return dst;
+}
+
+char *strncat(char *dst, const char *src, size_t n) {
+    char *d = dst + strlen(dst);
+    size_t i;
+    for (i = 0; i < n && src[i]; i++) d[i] = src[i];
+    d[i] = '\0';
+    return dst;
+}
+
+int strncmp(const char *s1, const char *s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) return (unsigned char)s1[i] - (unsigned char)s2[i];
+        if (s1[i] == '\0')  return 0;
+    }
+    return 0;
+}
+
+int strcasecmp(const char *s1, const char *s2) {
+    int i;
+    for (i = 0; s1[i] && s2[i]; i++) {
+        int c = tolower((unsigned char)s1[i]) - tolower((unsigned char)s2[i]);
+        if (c) return c;
+    }
+    return (unsigned char)s1[i] - (unsigned char)s2[i];
+}
+
+char *strchr(const char *s, int c) {
+    for (; *s; s++)
+        if ((unsigned char)*s == (unsigned char)c) return (char *)s;
+    return (unsigned char)c == 0 ? (char *)s : (char *)0;
+}
+
+char *strrchr(const char *s, int c) {
+    char *last = (char *)0;
+    for (; *s; s++)
+        if ((unsigned char)*s == (unsigned char)c) last = (char *)s;
+    if ((unsigned char)c == 0) return (char *)s;
+    return last;
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    if (!*needle) return (char *)haystack;
+    size_t nlen = strlen((char *)needle);
+    for (; *haystack; haystack++) {
+        if (*haystack == *needle && strncmp(haystack, needle, nlen) == 0)
+            return (char *)haystack;
+    }
+    return (char *)0;
+}
+
+size_t strspn(const char *s, const char *accept) {
+    size_t n = 0;
+    for (; *s; s++, n++)
+        if (!strchr(accept, (unsigned char)*s)) break;
+    return n;
+}
+
+size_t strcspn(const char *s, const char *reject) {
+    size_t n = 0;
+    for (; *s; s++, n++)
+        if (strchr(reject, (unsigned char)*s)) break;
+    return n;
+}
+
+size_t strnlen(const char *s, size_t maxlen) {
+    size_t i;
+    for (i = 0; i < maxlen && s[i]; i++);
+    return i;
+}
+
+char *strtok_r(char *str, const char *delim, char **saveptr) {
+    char *s = str ? str : *saveptr;
+    if (!s) return (char *)0;
+    s += strspn(s, delim);
+    if (!*s) { *saveptr = s; return (char *)0; }
+    char *tok = s;
+    s += strcspn(s, delim);
+    if (*s) { *s++ = '\0'; }
+    *saveptr = s;
+    return tok;
+}
+
+/* ── ────────────────────────────────────────────────────────────────────── */
+
 #define UINT64_MAX_VAL ((uint64_t)0xFFFFFFFFFFFFFFFFULL)
 
 uint64_t str_to_uint64(const char *s, uint8_t *error)

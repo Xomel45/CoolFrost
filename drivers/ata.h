@@ -121,6 +121,7 @@ typedef struct {
 #define DRIVE_TYPE_ATA   0
 #define DRIVE_TYPE_NVME  1
 #define DRIVE_TYPE_AHCI  2
+#define DRIVE_TYPE_VBLK  3
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
