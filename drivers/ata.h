@@ -120,6 +120,7 @@ typedef struct {
 /* ── Block device type codes ───────────────────────────────────────────── */
 #define DRIVE_TYPE_ATA   0
 #define DRIVE_TYPE_NVME  1
+#define DRIVE_TYPE_AHCI  2
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 

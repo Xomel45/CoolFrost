@@ -542,13 +542,19 @@ static void output_utf8_byte(uint8_t b, char attr) {
     /* else: invalid start byte, ignore */
 }
 
+static void (*g_serial_hook)(char) = 0;
+
+void screen_set_serial_hook(void (*fn)(char)) { g_serial_hook = fn; }
+
 void kprint_at_attr(char *message, int col, int row, char attr) {
     if (col >= 0 && row >= 0) {
         if (use_fb) { cur_col = col; cur_row = row; }
         else vga_set_cursor(get_offset(col, row));
     }
-    for (int i = 0; message[i] != 0; i++)
+    for (int i = 0; message[i] != 0; i++) {
+        if (g_serial_hook) g_serial_hook(message[i]);
         output_utf8_byte((uint8_t)message[i], attr);
+    }
 }
 
 void kprint_at(char *message, int col, int row) {

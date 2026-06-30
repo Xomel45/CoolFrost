@@ -16,6 +16,8 @@
 #include "../drivers/gpu.h"
 #include "../drivers/ata.h"
 #include "../drivers/nvme.h"
+#include "../drivers/ahci.h"
+#include "../drivers/serial.h"
 #include "../cpu/apic.h"
 #include "../cpu/smp.h"
 #include "../cpu/sched.h"
@@ -91,6 +93,9 @@ void kstart(uintptr_t addr) {
     mb_get_framebuffer(globals.multiboot_addr, &globals.fb_info);
     screen_init(&globals.fb_info);
 
+    /* COM1 serial mirror: all kprint output also goes to QEMU -serial stdio */
+    serial_init(COM1, 115200);
+
     isr_install();
     irq_install();
     rtc_read_datetime(&globals.datetime);
@@ -111,6 +116,7 @@ void kstart(uintptr_t addr) {
     /* Init storage and VFS */
     ata_init();
     nvme_init();
+    ahci_init();
     vfs_init();
     net_init();
 
@@ -202,6 +208,21 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
         }
     }
 
+    /* Auto-mount first AHCI GPT partition at /sata0p0 */
+    if (ahci_drive_count() > 0) {
+        gpt_partition_entry_t *gparts = gpt_parts_buf;
+        int gn = blk_read_gpt(DRIVE_TYPE_AHCI, 0, gparts, MAX_GPT_PARTS);
+        int mounted = 0;
+        for (int p = 0; p < gn && !mounted; p++) {
+            uint64_t lba   = gparts[p].first_lba;
+            uint64_t count = gparts[p].last_lba - gparts[p].first_lba + 1;
+            if (vfs_mount_ahci_gpt(0, lba, count, "/sata0p0") == 0) {
+                printf("Mounted AHCI GPT partition %d at /sata0p0\n", p);
+                mounted = 1;
+            }
+        }
+    }
+
     /* Bring up Application Processors */
     smp_init();
     printf("SMP: %d CPU(s) online\n", smp_cpu_count);
@@ -282,7 +303,8 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
         } else if (strcmp(cmd_buf, "lsblk") == 0) {
             uint8_t ata_count  = ata_drive_count();
             uint8_t nvme_count = nvme_drive_count();
-            if (ata_count == 0 && nvme_count == 0) {
+            uint8_t ahci_count = (uint8_t)ahci_drive_count();
+            if (ata_count == 0 && nvme_count == 0 && ahci_count == 0) {
                 kprint("No block devices detected\n");
             }
             for (uint8_t i = 0; i < ata_count; i++) {
@@ -326,6 +348,21 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                        i, drv->model, mb, drv->lba_size);
                 gpt_partition_entry_t *gparts = gpt_parts_buf;
                 int gn = blk_read_gpt(DRIVE_TYPE_NVME, i, gparts, MAX_GPT_PARTS);
+                for (int p = 0; p < gn; p++) {
+                    uint64_t lba  = gparts[p].first_lba;
+                    uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;
+                    uint64_t pmb  = secs / 2048;
+                    printf("  p%d: %s  LBA %lu  %lu MB\n",
+                           p, gpt_type_name(&gparts[p].type_guid), lba, pmb);
+                }
+            }
+            for (uint8_t i = 0; i < ahci_count; i++) {
+                ahci_drive_t *drv = ahci_get_drive(i);
+                if (!drv || !drv->active) continue;
+                uint64_t mb = drv->sector_count / 2048;
+                printf("sata%d: port %d  %lu MB\n", i, drv->port_idx, mb);
+                gpt_partition_entry_t *gparts = gpt_parts_buf;
+                int gn = blk_read_gpt(DRIVE_TYPE_AHCI, i, gparts, MAX_GPT_PARTS);
                 for (int p = 0; p < gn; p++) {
                     uint64_t lba  = gparts[p].first_lba;
                     uint64_t secs = gparts[p].last_lba - gparts[p].first_lba + 1;

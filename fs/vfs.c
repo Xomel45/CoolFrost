@@ -5,6 +5,7 @@
 #include "ntfs.h"
 #include "../drivers/ata.h"
 #include "../drivers/nvme.h"
+#include "../drivers/ahci.h"
 #include "../libc/mem.h"
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -259,6 +260,48 @@ int vfs_mount_nvme_gpt(uint8_t nvme_idx, uint64_t lba_start, uint64_t sector_cou
         uint16_t ext_magic = *(uint16_t *)&sb_check[56];
         if (ext_magic == 0xEF53)
             return ext2_mount(DRIVE_TYPE_NVME, nvme_idx, lba_start, &mount_table[slot]);
+    }
+
+    mount_table[slot].active = 0;
+    return -4;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  vfs_mount_ahci_gpt — mount a GPT partition from an AHCI SATA drive
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+int vfs_mount_ahci_gpt(uint8_t ahci_idx, uint64_t lba_start, uint64_t sector_count,
+                       const char *mount_path) {
+    int slot = -1;
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (!mount_table[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    vfs_strcpy(mount_table[slot].path, mount_path, 64);
+    mount_table[slot].partition    = 0;
+    mount_table[slot].part_sectors = sector_count;
+
+    uint8_t boot[512];
+    if (blk_read(DRIVE_TYPE_AHCI, ahci_idx, lba_start, 1, boot) != 0)
+        return -2;
+
+    uint16_t bps  = *(uint16_t *)&boot[11];
+    uint16_t rec  = *(uint16_t *)&boot[17];
+    uint16_t fs16 = *(uint16_t *)&boot[22];
+
+    if (bps == 512 && rec == 0 && fs16 == 0)
+        return fat32_mount(DRIVE_TYPE_AHCI, ahci_idx, lba_start, &mount_table[slot]);
+
+    if (boot[3] == 'N' && boot[4] == 'T' &&
+        boot[5] == 'F' && boot[6] == 'S')
+        return ntfs_mount(DRIVE_TYPE_AHCI, ahci_idx, lba_start, &mount_table[slot]);
+
+    uint8_t sb_check[512];
+    if (blk_read(DRIVE_TYPE_AHCI, ahci_idx, lba_start + 2, 1, sb_check) == 0) {
+        uint16_t ext_magic = *(uint16_t *)&sb_check[56];
+        if (ext_magic == 0xEF53)
+            return ext2_mount(DRIVE_TYPE_AHCI, ahci_idx, lba_start, &mount_table[slot]);
     }
 
     mount_table[slot].active = 0;

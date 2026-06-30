@@ -89,6 +89,10 @@ int  get_cursor_offset(void);
 void set_cursor_offset(int offset);
 int  get_offset(int col, int row);
 
+/* Optional serial mirror: if set, every character printed via kprint also
+ * goes to this function (e.g. serial_putc for QEMU -serial stdio output). */
+void screen_set_serial_hook(void (*fn)(char));
+
 /* VGA text fallback registers (used when framebuffer unavailable) */
 #define REG_SCREEN_CTRL 0x3D4
 #define REG_SCREEN_DATA 0x3D5

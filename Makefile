@@ -44,6 +44,20 @@ run-net: kernel.elf
 	    -machine pcspk-audiodev=speaker \
 	    -enable-kvm -cpu host -vga std
 
+sata.img:
+	dd if=/dev/zero of=sata.img bs=1M count=256
+
+run-ahci: kernel.elf
+	qemu-system-x86_64 -m 512M -kernel kernel.elf \
+	    -drive file=hdd.img,format=raw,if=ide \
+	    -device ich9-ahci,id=ahci0 \
+	    -drive file=sata.img,format=raw,if=none,id=sata0 \
+	    -device ide-hd,drive=sata0,bus=ahci0.0 \
+	    -serial stdio \
+	    -audiodev pa,id=speaker \
+	    -machine pcspk-audiodev=speaker \
+	    -enable-kvm -cpu host -vga std
+
 run-nvme: kernel.elf
 	qemu-system-x86_64 -m 512M -kernel kernel.elf \
 	    -drive file=hdd.img,format=raw,if=ide \
