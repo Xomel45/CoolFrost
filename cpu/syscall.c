@@ -73,6 +73,22 @@ void syscall_dispatch(registers_t *r) {
         break;
     }
 
+    case SYS_WRITE: {
+        /* kprint(), not kprint_char() — only kprint()/kprint_at_attr() mirror
+         * to serial (drivers/screen.c: g_serial_hook), and that mirror is
+         * the only way to observe output from a headless QEMU test run. */
+        const char *buf = (const char *)(uintptr_t)r->rdi;
+        uint64_t len = r->rsi;
+        if (len > 256) len = 256;
+        if (!is_user_range(buf, len)) { r->rax = (uint64_t)-1; break; }
+        char local[257];
+        memcpy(local, buf, len);
+        local[len] = '\0';
+        kprint(local);
+        r->rax = len;
+        break;
+    }
+
     default:
         r->rax = (uint64_t)-1;
         break;

@@ -26,6 +26,8 @@
 #include "../cpu/gdt.h"
 #include "../cpu/paging.h"
 #include "../cpu/syscall.h"
+#include "../cpu/vmm.h"
+#include "elf.h"
 #include "../user/smoke.h"
 #include "../user/wm.h"
 #include "../fs/vfs.h"
@@ -257,6 +259,52 @@ static void uidemo_run(void) {
 
     gfx_surface_destroy(pat);
     clear_screen();   /* back to text console */
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  vmmtest — A3 smoke test for cpu/vmm.h's per-process address spaces.
+ *  Hand-assembled ring3 code (no ELF/filesystem involved yet — that's
+ *  kernel/elf.c) mapped into a freshly built private PML4/PDPT, run via
+ *  sched_submit_user_as, then torn down. Proves CR3 switching and the
+ *  PDPT[1] page-table walker (cpu/vmm.c) before anything reads a real ELF.
+ * ══════════════════════════════════════════════════════════════════════════ */
+static int vmmtest_run(void) {
+    /* nop*10; mov eax, SYS_EXIT(0); int 0x80; jmp $ (safety net — SYS_EXIT
+     * never returns, but if it somehow did, spin instead of running off
+     * into whatever garbage follows in the page). */
+    static const uint8_t code[] = {
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0xB8, 0x00, 0x00, 0x00, 0x00,
+        0xCD, 0x80,
+        0xEB, 0xFE,
+    };
+    const uint64_t code_va  = VMM_USER_BASE + 0x1000;
+    const uint64_t stack_va = VMM_USER_BASE + 0x2000;
+
+    vmm_as_t *as = vmm_create_address_space();
+    if (!as) return -1;
+
+    uint64_t code_pa = vmm_alloc_page(as);
+    uint64_t stack_pa = vmm_alloc_page(as);
+    if (!code_pa || !stack_pa) { vmm_destroy_address_space(as); return -1; }
+
+    memcpy((void *)(uintptr_t)code_pa, code, sizeof(code));
+
+    if (vmm_map_page(as, code_va, code_pa, VMM_PAGE_RW_U) != 0 ||
+        vmm_map_page(as, stack_va, stack_pa, VMM_PAGE_RW_U) != 0) {
+        vmm_destroy_address_space(as);
+        return -1;
+    }
+
+    int slot = sched_submit_user_as("vmmtest", (void (*)(void *))(uintptr_t)code_va,
+                                    (void *)0, as->pml4_phys, stack_va + 4096);
+    if (slot < 0) { vmm_destroy_address_space(as); return -1; }
+
+    task_t *t = sched_get_task(slot);
+    while (t->state != TASK_DONE) sched_yield();
+
+    vmm_destroy_address_space(as);
+    return 0;
 }
 
 void pci_scan_devs() {
@@ -837,6 +885,37 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 kprint_attr("sched_submit_user failed\n", RED_FG);
             sleep_ms(200);
             kprint("ring3test: if you're reading this, the kernel is still alive.\n");
+        } else if (strcmp(cmd_buf, "vmmtest") == 0) {
+            /* A3 smoke test for the ELF-loader VMM (cpu/vmm.h): a hand-built
+             * process with its own CR3, no filesystem/ELF parsing involved. */
+            kprint("vmmtest: running a private-address-space process...\n");
+            if (vmmtest_run() == 0)
+                kprint("vmmtest: ok, address space torn down, kernel still alive.\n");
+            else
+                kprint_attr("vmmtest: failed\n", RED_FG);
+        } else if (starts_with(cmd_buf, "exec ")) {
+            /* Loads a static ET_EXEC x86_64 ELF from a mounted filesystem
+             * into its own private address space (cpu/vmm.h) and runs it
+             * (kernel/elf.c). Blocks like `wm`/`vmmtest` — the shell's own
+             * getline() and the process's syscalls must never run at once. */
+            const char *path = cmd_buf + 5;
+            while (*path == ' ') path++;
+            if (!*path) {
+                kprint_attr("Usage: exec <path>\n", RED_FG);
+            } else {
+                vmm_as_t *as = (vmm_as_t *)0;
+                int slot = elf_exec(path, "exec", &as);
+                if (slot < 0) {
+                    kprint_attr("exec: failed to load ", RED_FG);
+                    kprint((char *)path);
+                    kprint("\n");
+                } else {
+                    task_t *t = sched_get_task(slot);
+                    while (t->state != TASK_DONE) sched_yield();
+                    vmm_destroy_address_space(as);
+                    kprint("exec: exited\n");
+                }
+            }
         } else if (strcmp(cmd_buf, "mouse") == 0) {
             int ps2_ok = mouse_present();
             int usb_ok = usbhid_mouse_present();

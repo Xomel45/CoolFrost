@@ -117,6 +117,7 @@ int       vfs_open(const char *path, uint8_t flags);
 int       vfs_close(int fd);
 int       vfs_read(int fd, void *buffer, size_t size);
 int       vfs_write(int fd, const void *buffer, size_t size);
+int       vfs_seek(int fd, uint64_t offset);
 
 /* Directory operations */
 dirent_t *vfs_readdir(int fd, uint32_t index);

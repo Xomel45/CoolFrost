@@ -443,6 +443,14 @@ int vfs_read(int fd, void *buffer, size_t size) {
     return n;
 }
 
+int vfs_seek(int fd, uint64_t offset) {
+    if (fd < 0 || fd >= MAX_FD)  return -1;
+    if (!fd_table[fd].active)    return -1;
+
+    fd_table[fd].offset = offset;
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 int vfs_write(int fd, const void *buffer, size_t size) {

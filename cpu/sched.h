@@ -49,6 +49,10 @@ typedef struct {
     void         *arg;
     uint8_t       is_user;      /* 1 = runs in ring3 (see sched_submit_user) */
     uint8_t      *user_stack;   /* CPL3 stack (from the .user_bss pool), NULL for ring0 tasks */
+    uint64_t      cr3;          /* 0 = shared/master address space (kernel tasks, WM, smoke
+                                  * tests); nonzero = this task's private PML4 physical
+                                  * address (cpu/vmm.h), loaded by sched_irq_end() before it
+                                  * runs — see sched_submit_user_as(). */
 } task_t;
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -73,6 +77,16 @@ int     sched_submit_prio(const char *name, void (*func)(void *), void *arg,
  * as sched_submit_prio's kernel stacks — fine for the handful of long-lived
  * tasks this scheduler is meant for). */
 int     sched_submit_user(const char *name, void (*entry)(void *), void *arg);
+
+/* Submit a task that runs in ring3 with its OWN private address space
+ * (cpu/vmm.h) instead of the shared/master one — used by kernel/elf.c for
+ * exec'd processes. `cr3` is the process's PML4 physical address
+ * (vmm_as_t.pml4_phys); `user_stack_top` is a page the caller already
+ * mapped into that same address space (vmm_map_page), NOT the shared
+ * .user_stack_pool sched_submit_user() uses. sched_irq_end() reloads CR3
+ * around this task automatically. */
+int     sched_submit_user_as(const char *name, void (*entry)(void *), void *arg,
+                             uint64_t cr3, uint64_t user_stack_top);
 
 /* Voluntarily give up the CPU */
 void    sched_yield(void);

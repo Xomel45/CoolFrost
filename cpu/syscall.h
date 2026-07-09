@@ -16,6 +16,8 @@
 #define SYS_FB_INFO     5   /* no args -> rax = (width<<32)|height, or 0 if gfx isn't up */
 #define SYS_GET_FONT    6   /* rdi = user buffer (>=256*16 bytes) -> filled with the
                               * 8x16 CP437 glyph table (drivers/screen.c), once at startup */
+#define SYS_WRITE       7   /* rdi = user buffer, rsi = length (capped) -> kprint's it to
+                              * the kernel console/serial. The only I/O exec'd ELFs have. */
 
 /* Installs the int 0x80 gate at DPL=3. Called once from kstart(), after
  * isr_install() (needs the IDT already allocated/loaded). */

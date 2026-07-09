@@ -13,6 +13,29 @@ GDB    = gdb
 CFLAGS = -g -ffreestanding -Wall -Wextra -fno-exceptions \
          -m64 -mno-red-zone -fno-pic -fno-stack-protector
 
+# Standalone freestanding ELF built OUTSIDE kernel.elf entirely — runs in
+# its own address space (cpu/vmm.h) loaded by kernel/elf.c's `exec` command.
+# Companion linker script (userland/user.ld) pins the load address to match.
+USER_CFLAGS = -ffreestanding -nostdlib -static -no-pie -m64 -mno-red-zone \
+              -fno-pic -fno-stack-protector -Wall -Wextra
+
+userland/hello.elf: userland/hello.c userland/usyscall.h userland/user.ld
+	${CC} ${USER_CFLAGS} -T userland/user.ld -o $@ userland/hello.c
+
+userland/crash.elf: userland/crash.c userland/usyscall.h userland/user.ld
+	${CC} ${USER_CFLAGS} -T userland/user.ld -o $@ userland/crash.c
+
+# Test disk: MBR + one FAT32 (LBA) partition at LBA 2048 containing
+# userland/hello.elf + crash.elf, for `exec /hda1/hello.elf`. mtools'
+# `@@offset` syntax formats/copies directly into the image file — no loop
+# device, no root.
+hdd.img: userland/hello.elf userland/crash.elf
+	dd if=/dev/zero of=$@ bs=1M count=64
+	mformat -i $@@@1M -F ::
+	mcopy -i $@@@1M userland/hello.elf ::/hello.elf
+	mcopy -i $@@@1M userland/crash.elf ::/crash.elf
+	python3 -c "import struct; f=open('$@','r+b'); f.seek(446); f.write(struct.pack('<BBBBBBBBII',0,0xFE,0xFF,0xFF,0x0C,0xFE,0xFF,0xFF,2048,129024)); f.seek(510); f.write(b'\x55\xAA'); f.close()"
+
 # Flat-binary AP trampoline → embedded into the kernel as a blob
 boot/ap_trampoline.bin: boot/ap_trampoline.asm
 	nasm -f bin -o $@ $<
@@ -109,4 +132,5 @@ check: ${C_SOURCES}
 clean:
 	rm -rf *.iso *.dis *.o *.elf hdd.img
 	rm -rf kernel/*.o boot/*.o boot/*.bin drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o net/*.o user/*.o
+	rm -rf userland/*.elf
 	rm -rf iso/

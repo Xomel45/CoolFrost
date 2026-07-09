@@ -47,6 +47,13 @@ static volatile int want_schedule    = 0;
 /* Guards against sched_irq_end being active before sched_run(). */
 static volatile int scheduler_active = 0;
 
+/* boot/multiboot_entry.asm's PML4 physical address — the "shared/master"
+ * CR3 every task with task_t.cr3==0 runs under (kernel tasks, WM, smoke
+ * tests). Tracked so sched_irq_end only reloads CR3 when it's actually
+ * changing (a `mov cr3` flushes the whole TLB — not free). */
+#define MASTER_CR3_PHYS 0x1000ULL
+static uint64_t loaded_cr3 = MASTER_CR3_PHYS;
+
 /* ── Ring3 stack pool ───────────────────────────────────────────────────── *
  * Lives in .user_bss (linker.ld) so it falls inside the region paging.c
  * marks U=1 — CPL3 code can only ever run on a stack the CPU is allowed to
@@ -150,6 +157,20 @@ static void task_init_stack_user(task_t *t) {
                          (uint64_t)(uintptr_t)t->func, (uint64_t)(uintptr_t)t->arg);
 }
 
+/* Same as task_init_stack_user, but for a task with its own private address
+ * space (cpu/vmm.h): the stack top is caller-supplied (a page the caller
+ * already mapped into that address space via vmm_map_page), not derived
+ * from the shared .user_bss pool. user_task_trampoline itself stays the
+ * entry point — it's part of the kernel's low-memory identity map (PDPT[0]),
+ * which every process's PDPT[0] slot references by copy (cpu/vmm.c), so
+ * it's mapped and U=1 in every address space, not just the shared one. */
+static void task_init_stack_user_as(task_t *t, uint64_t ustack_top) {
+    uint64_t kstack_top = (uint64_t)(uintptr_t)t->stack + TASK_STACK_SZ;
+    t->rsp = frame_build(kstack_top, (uint64_t)(uintptr_t)user_task_trampoline,
+                         GDT_USER_CS | 3, GDT_USER_DS | 3, ustack_top,
+                         (uint64_t)(uintptr_t)t->func, (uint64_t)(uintptr_t)t->arg);
+}
+
 /* ── sched_init ─────────────────────────────────────────────────────────── */
 void sched_init(void) {
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -227,6 +248,7 @@ int sched_submit_prio(const char *name, void (*func)(void *), void *arg,
     t->stack    = stack;
     t->is_user  = 0;
     t->user_stack = (uint8_t *)0;
+    t->cr3      = 0;   /* reset in case this slot's previous occupant was a private-AS task */
     t->quantum  = prio_quantum[priority];
     t->timeslice= t->quantum;
     t->func     = func;
@@ -278,6 +300,7 @@ int sched_submit_user(const char *name, void (*entry)(void *), void *arg) {
     t->stack      = kstack;
     t->user_stack = user_stack_pool[user_stack_next++];
     t->is_user    = 1;
+    t->cr3        = 0;   /* shared/master address space */
     t->quantum    = prio_quantum[PRIO_NORMAL];
     t->timeslice  = t->quantum;
     t->func       = entry;
@@ -285,6 +308,50 @@ int sched_submit_user(const char *name, void (*entry)(void *), void *arg) {
 
     task_set_name(t, name);
     task_init_stack_user(t);
+    rq_push(PRIO_NORMAL, t);
+
+    __asm__ volatile("pushq %0; popfq" :: "r"(rflags));
+    return slot;
+}
+
+/* ── sched_submit_user_as ──────────────────────────────────────────────── */
+int sched_submit_user_as(const char *name, void (*entry)(void *), void *arg,
+                         uint64_t cr3, uint64_t user_stack_top) {
+    if (!entry || !cr3) return -1;
+
+    uint64_t rflags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(rflags));
+
+    int slot = find_free_slot();
+    if (slot < 0) {
+        __asm__ volatile("pushq %0; popfq" :: "r"(rflags));
+        return -1;
+    }
+
+    /* Ring0 trap stack, same role as in sched_submit_user — the process's
+     * own address space has no kernel-mode stack of its own to trap into. */
+    uint8_t *kstack = (uint8_t *)kmalloc(TASK_STACK_SZ, 16, (uintptr_t *)0);
+    if (!kstack) {
+        __asm__ volatile("pushq %0; popfq" :: "r"(rflags));
+        return -1;
+    }
+
+    task_t *t     = &task_pool[slot];
+    t->id         = slot;
+    t->state      = TASK_READY;
+    t->priority   = PRIO_NORMAL;
+    t->cpu_id     = -1;
+    t->stack      = kstack;
+    t->user_stack = (uint8_t *)0;   /* not from the shared pool — private AS instead */
+    t->is_user    = 1;
+    t->cr3        = cr3;
+    t->quantum    = prio_quantum[PRIO_NORMAL];
+    t->timeslice  = t->quantum;
+    t->func       = entry;
+    t->arg        = arg;
+
+    task_set_name(t, name);
+    task_init_stack_user_as(t, user_stack_top);
     rq_push(PRIO_NORMAL, t);
 
     __asm__ volatile("pushq %0; popfq" :: "r"(rflags));
@@ -342,6 +409,17 @@ uint64_t sched_irq_end(uint64_t cur_rsp) {
      * it would land on whatever task last set RSP0. */
     if (next->is_user)
         tss_set_rsp0((uint64_t)(uintptr_t)next->stack + TASK_STACK_SZ);
+
+    /* Load next's address space if it differs from what's currently active
+     * — covers switching into a private-AS process (cpu/vmm.h) and back out
+     * to the shared/master one (task_t.cr3==0), symmetrically. */
+    {
+        uint64_t want_cr3 = next->cr3 ? next->cr3 : MASTER_CR3_PHYS;
+        if (want_cr3 != loaded_cr3) {
+            __asm__ volatile("mov %0, %%cr3" :: "r"(want_cr3) : "memory");
+            loaded_cr3 = want_cr3;
+        }
+    }
 
     cur_task        = next;
     cur_task->state = TASK_RUNNING;
