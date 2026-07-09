@@ -176,7 +176,7 @@ static int io_cmd(nvme_drive_t *d, nvme_sqe_t *cmd) {
 }
 
 /* ── Initialise one NVMe controller ──────────────────────────────────────── */
-static int nvme_init_one(uint8_t bus, uint8_t slot) {
+static int nvme_init_one(uint8_t bus, uint8_t slot, uint8_t func) {
     if (num_drives >= MAX_NVME_DRIVES) return -1;
 
     int idx = num_drives;
@@ -186,13 +186,13 @@ static int nvme_init_one(uint8_t bus, uint8_t slot) {
     d->io_cq_phase    = 1;
 
     /* Enable memory space + bus mastering in PCI command register */
-    uint32_t pci_cmd = pci_config_read_dword(bus, slot, 0, 0x04u);
+    uint32_t pci_cmd = pci_config_read_dword(bus, slot, func, 0x04u);
     pci_cmd |= 0x06u;
-    pci_config_write_dword(bus, slot, 0, 0x04u, pci_cmd);
+    pci_config_write_dword(bus, slot, func, 0x04u, pci_cmd);
 
     /* Read 64-bit BAR0 (NVMe always uses a 64-bit memory BAR) */
-    uint32_t bar0_lo = pci_config_read_dword(bus, slot, 0, 0x10u);
-    uint32_t bar0_hi = pci_config_read_dword(bus, slot, 0, 0x14u);
+    uint32_t bar0_lo = pci_config_read_dword(bus, slot, func, 0x10u);
+    uint32_t bar0_hi = pci_config_read_dword(bus, slot, func, 0x14u);
     d->bar0 = ((uint64_t)bar0_hi << 32) | ((uint64_t)bar0_lo & ~0xFULL);
     if (!d->bar0) return -1;
 
@@ -256,14 +256,14 @@ static int nvme_init_one(uint8_t bus, uint8_t slot) {
 
     /* NSZE at bytes 0-7: namespace size in logical blocks */
     uint64_t nsze = 0;
-    /* CoolFrost memcpy(source, dest, n): copies FROM ib TO &nsze */
-    memcpy(ib, (uint8_t *)&nsze, 8u);
+    /* copy NSZE out of the identify buffer */
+    memcpy((uint8_t *)&nsze, ib, 8u);
 
     /* FLBAS at byte 26: active LBA format index [3:0] */
     uint8_t flbas = ib[26] & 0x0Fu;
     /* LBAF[flbas] at byte 128 + flbas*4: LBADS at bits[23:16] */
     uint32_t lbaf = 0;
-    memcpy(ib + 128u + flbas * 4u, (uint8_t *)&lbaf, 4u);
+    memcpy((uint8_t *)&lbaf, ib + 128u + flbas * 4u, 4u);
     uint8_t lbads = (uint8_t)((lbaf >> 16) & 0xFFu);
     d->lba_size = 1u << lbads;
     if (d->lba_size < 512u) d->lba_size = 512u;
@@ -303,17 +303,20 @@ void nvme_init(void) {
 
     for (uint16_t bus = 0; bus < 256 && num_drives < MAX_NVME_DRIVES; bus++) {
         for (uint8_t slot = 0; slot < 32 && num_drives < MAX_NVME_DRIVES; slot++) {
-            if (pci_get_vendor(bus, slot) == 0xFFFF) continue;
+            uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+            for (uint8_t func = 0; func < nfunc; func++) {
+            if (pci_get_vendor(bus, slot, func) == 0xFFFF) continue;
             /* NVMe: class=0x01 (storage), subclass=0x08 (NVM), progif=0x02 */
-            if (pci_get_class_code(bus, slot) != 0x01) continue;
-            if (pci_get_subclass(bus, slot)   != 0x08) continue;
-            if (pci_get_progif(bus, slot)     != 0x02) continue;
+            if (pci_get_class_code(bus, slot, func) != 0x01) continue;
+            if (pci_get_subclass(bus, slot, func)   != 0x08) continue;
+            if (pci_get_progif(bus, slot, func)     != 0x02) continue;
 
-            if (nvme_init_one((uint8_t)bus, slot) == 0) {
+            if (nvme_init_one((uint8_t)bus, slot, func) == 0) {
                 nvme_drive_t *d = &drives[num_drives - 1];
                 uint64_t mb = d->sectors / 2048u;
                 printf("nvme%d: %s  %lu MB  (%lu sectors, LBA=%u B)\n",
                        (int)(num_drives - 1), d->model, mb, d->sectors, d->lba_size);
+            }
             }
         }
     }
@@ -343,8 +346,8 @@ int nvme_read_sectors(uint8_t drv_idx, uint64_t lba, uint8_t count, void *buf) {
             cmd.cdw12 = (uint32_t)(batch - 1u); /* NLB: number of blocks - 1 */
             if (io_cmd(d, &cmd) != 0) return -1;
 
-            /* Copy io_data → out (CoolFrost memcpy: source first) */
-            memcpy(io_data, out + (size_t)done * 512u, (size_t)batch * 512u);
+            /* Copy io_data → out */
+            memcpy(out + (size_t)done * 512u, io_data, (size_t)batch * 512u);
             done += batch;
         }
         return 0;
@@ -368,8 +371,8 @@ int nvme_read_sectors(uint8_t drv_idx, uint64_t lba, uint8_t count, void *buf) {
             cmd.cdw12 = 0; /* NLB=0 → 1 block */
             if (io_cmd(d, &cmd) != 0) return -1;
 
-            /* Extract the 512-byte slice (CoolFrost memcpy: source first) */
-            memcpy(io_data + off_in, out + (size_t)i * 512u, 512u);
+            /* Extract the 512-byte slice */
+            memcpy(out + (size_t)i * 512u, io_data + off_in, 512u);
         }
         return 0;
     }
@@ -390,8 +393,8 @@ int nvme_write_sectors(uint8_t drv_idx, uint64_t lba, uint8_t count, const void 
         uint8_t batch = count - done;
         if (batch > 8u) batch = 8u;
 
-        /* Copy in → io_data (CoolFrost memcpy: source first; cast away const) */
-        memcpy((uint8_t *)(in + (size_t)done * 512u), io_data, (size_t)batch * 512u);
+        /* Copy in → io_data */
+        memcpy(io_data, (uint8_t *)(in + (size_t)done * 512u), (size_t)batch * 512u);
 
         nvme_sqe_t cmd;
         memset(&cmd, 0, sizeof(cmd));

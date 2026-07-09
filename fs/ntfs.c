@@ -198,8 +198,7 @@ static int read_nonresident(ntfs_fs_t *fs, ntfs_attr_nonresident_t *attr,
                 uint32_t chunk = fs->cluster_size - within_clust;
                 if (chunk > remaining) chunk = remaining;
 
-                /* memcpy(source, dest, n) — CoolFrost order */
-                memcpy(&data_buf[within_clust], &buffer[bytes_read], (int)chunk);
+                memcpy(&buffer[bytes_read], &data_buf[within_clust], (int)chunk);
                 bytes_read   += chunk;
                 remaining    -= chunk;
                 run_byte_off += chunk;
@@ -308,12 +307,9 @@ static int ntfs_dir_lookup(ntfs_fs_t *fs, uint32_t dir_mft,
                                      out_mft, out_fn);
     if (counter < 0) return 0;  /* found */
 
-    /* ── $INDEX_ALLOCATION (non-resident, for larger directories) ── */
-    /* Re-read MFT record since walk_index_entries might not have clobbered
-     * mft_buf, but read_nonresident uses data_buf which is separate. */
-    if (read_mft_record(fs, dir_mft) != 0)
-        return -1;
-
+    /* ── $INDEX_ALLOCATION (non-resident, for larger directories) ──
+     * mft_buf still holds the directory record: walk_index_entries only
+     * reads it, and read_nonresident works in data_buf. */
     ntfs_attr_common_t *ia_attr = find_attr(mft_buf, NTFS_ATTR_INDEX_ALLOCATION);
     if (!ia_attr || !ia_attr->non_resident)
         return -1;  /* not found, no more entries */
@@ -334,16 +330,8 @@ static int ntfs_dir_lookup(ntfs_fs_t *fs, uint32_t dir_mft,
     static uint8_t indx_buf[4096];
 
     for (uint32_t off = 0; off + rec_size <= total; off += rec_size) {
-        /* Read this INDX record via data runs */
-        /* Re-read MFT record to re-parse data runs each iteration
-         * (read_nonresident uses data_buf which we need for reading) */
-        if (read_mft_record(fs, dir_mft) != 0)
-            return -1;
-
-        ia_attr = find_attr(mft_buf, NTFS_ATTR_INDEX_ALLOCATION);
-        if (!ia_attr) return -1;
-        ia_nr = (ntfs_attr_nonresident_t *)ia_attr;
-
+        /* Read this INDX record via data runs (data runs in mft_buf stay
+         * valid: nothing in this loop overwrites mft_buf) */
         int rd = read_nonresident(fs, ia_nr, off, rec_size, indx_buf);
         if (rd < (int)rec_size) continue;
 
@@ -461,8 +449,7 @@ int ntfs_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
         if (offset + size > data_len)
             size = data_len - offset;
 
-        /* memcpy(source, dest, n) — CoolFrost order */
-        memcpy(&data_ptr[offset], (uint8_t *)buffer, (int)size);
+        memcpy((uint8_t *)buffer, &data_ptr[offset], (int)size);
         return (int)size;
     }
 

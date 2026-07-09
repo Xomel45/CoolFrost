@@ -46,11 +46,11 @@ static void dhcp_parse_options(const uint8_t *opts, int olen) {
         uint8_t len  = opts[i + 1];
         const uint8_t *val = opts + i + 2;
         if (code == 1 && len == 4)   /* subnet mask */
-            memcpy((uint8_t *)val, (uint8_t *)&dhcp_offered_mask, 4);
+            memcpy((uint8_t *)&dhcp_offered_mask, (uint8_t *)val, 4);
         if (code == 3 && len >= 4)   /* router / default gateway */
-            memcpy((uint8_t *)val, (uint8_t *)&dhcp_offered_gw, 4);
+            memcpy((uint8_t *)&dhcp_offered_gw, (uint8_t *)val, 4);
         if (code == 54 && len == 4)  /* server identifier */
-            memcpy((uint8_t *)val, (uint8_t *)&dhcp_server_ip, 4);
+            memcpy((uint8_t *)&dhcp_server_ip, (uint8_t *)val, 4);
         i += 2 + len;
     }
 }
@@ -74,11 +74,11 @@ static void dhcp_recv(const ip_addr_t *src_ip, uint16_t src_port,
     dhcp_parse_options(msg->options, 312);
 
     if (mtype == DHCPOFFER) {
-        /* Save offered IP (CoolFrost memcpy: source, dest, n) */
-        memcpy((uint8_t *)msg->yiaddr.b, (uint8_t *)&dhcp_offered_ip, 4);
+        /* Save offered IP */
+        memcpy((uint8_t *)&dhcp_offered_ip, (uint8_t *)msg->yiaddr.b, 4);
         dhcp_got_offer = 1;
     } else if (mtype == DHCPACK) {
-        memcpy((uint8_t *)msg->yiaddr.b, (uint8_t *)&dhcp_offered_ip, 4);
+        memcpy((uint8_t *)&dhcp_offered_ip, (uint8_t *)msg->yiaddr.b, 4);
         dhcp_got_ack = 1;
     }
 }
@@ -94,7 +94,7 @@ static void dhcp_send(uint8_t msg_type) {
     dhcp_pkt.flags = htons(0x8000u); /* broadcast flag */
 
     /* Client hardware address (our MAC) */
-    memcpy((uint8_t *)net_mac.b, dhcp_pkt.chaddr, 6);
+    memcpy(dhcp_pkt.chaddr, (uint8_t *)net_mac.b, 6);
 
     /* Options: magic cookie */
     uint8_t *o = dhcp_pkt.options;
@@ -113,16 +113,16 @@ static void dhcp_send(uint8_t msg_type) {
 
         /* Option 61: Client Identifier */
         o[oi++] = 61; o[oi++] = 7; o[oi++] = 1;
-        memcpy((uint8_t *)net_mac.b, o + oi, 6); oi += 6;
+        memcpy(o + oi, (uint8_t *)net_mac.b, 6); oi += 6;
 
     } else if (msg_type == DHCPREQUEST) {
         /* Option 50: Requested IP Address */
         o[oi++] = 50; o[oi++] = 4;
-        memcpy((uint8_t *)&dhcp_offered_ip, o + oi, 4); oi += 4;
+        memcpy(o + oi, (uint8_t *)&dhcp_offered_ip, 4); oi += 4;
 
         /* Option 54: Server Identifier */
         o[oi++] = 54; o[oi++] = 4;
-        memcpy((uint8_t *)&dhcp_server_ip, o + oi, 4); oi += 4;
+        memcpy(o + oi, (uint8_t *)&dhcp_server_ip, 4); oi += 4;
     }
 
     o[oi++] = 0xFF; /* End option */
@@ -158,9 +158,9 @@ int dhcp_discover(void) {
     if (!dhcp_got_ack) return -1;
 
     /* Apply configuration */
-    memcpy((uint8_t *)&dhcp_offered_ip,   (uint8_t *)net_ip.b,   4);
-    memcpy((uint8_t *)&dhcp_offered_mask, (uint8_t *)net_mask.b, 4);
-    memcpy((uint8_t *)&dhcp_offered_gw,   (uint8_t *)net_gw.b,   4);
+    memcpy((uint8_t *)net_ip.b, (uint8_t *)&dhcp_offered_ip,   4);
+    memcpy((uint8_t *)net_mask.b, (uint8_t *)&dhcp_offered_mask, 4);
+    memcpy((uint8_t *)net_gw.b, (uint8_t *)&dhcp_offered_gw,   4);
 
     return 0;
 }

@@ -43,7 +43,7 @@ void udp_send(const ip_addr_t *dst_ip,
     hdr->length   = htons((uint16_t)(8 + dlen));
     hdr->checksum = 0; /* skip checksum for IPv4 UDP */
 
-    memcpy((uint8_t *)data, udp_tx + 8, dlen);
+    memcpy(udp_tx + 8, (uint8_t *)data, dlen);
     ip_send(dst_ip, IP_PROTO_UDP, udp_tx, (uint16_t)(8 + dlen));
 }
 

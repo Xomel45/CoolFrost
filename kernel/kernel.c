@@ -23,12 +23,24 @@
 #include "../cpu/apic.h"
 #include "../cpu/smp.h"
 #include "../cpu/sched.h"
+#include "../cpu/gdt.h"
+#include "../cpu/paging.h"
+#include "../cpu/syscall.h"
+#include "../user/smoke.h"
+#include "../user/wm.h"
 #include "../fs/vfs.h"
 #include "../fs/fat32.h"
 #include "../fs/ext2.h"
 #include "../fs/ntfs.h"
 #include "../net/net.h"
 #include "../net/icmp.h"
+#include "../drivers/mouse.h"
+#include "../drivers/xhci.h"
+#include "../drivers/usb.h"
+#include "../drivers/usbhid.h"
+#include "../libc/utf8.h"
+#include "../gfx/gfx.h"
+#include "../ui/event.h"
 
 #include <stdint.h>
 
@@ -98,8 +110,17 @@ void kstart(uintptr_t addr) {
     /* COM1 serial mirror: all kprint output also goes to QEMU -serial stdio */
     serial_init(COM1, 115200);
 
+    /* Ring3 infra: permanent GDT+TSS, then mark the linker-reserved user
+     * region accessible from CPL3. Both need IF=0 (still true here — only
+     * irq_install() below does `sti`) and must precede isr_install() so the
+     * IDT's syscall gate can rely on GDT_KERNEL_CS from the final table. */
+    gdt_init();
+    paging_mark_user_region();
+
     isr_install();
+    syscall_install();
     irq_install();
+    sched_init();   /* set up scheduler before first timer tick */
     rtc_read_datetime(&globals.datetime);
     // If CPUID detected
     if (check_cpuid()) {
@@ -121,18 +142,133 @@ void kstart(uintptr_t addr) {
     ahci_init();
     vblk_init();
     ac97_init();
+    if (xhci_init()) {
+        xhci_scan_devices();
+        usbhid_init();
+    }
+    if (mouse_init() && globals.fb_info.width && globals.fb_info.height)
+        mouse_set_bounds((int32_t)globals.fb_info.width,
+                         (int32_t)globals.fb_info.height);
     vfs_init();
     net_init();
+    event_init();
 
     perform_tests();
 }
 
-void pci_scan_devs() {
-    for (uint16_t bus = 0; bus < 256; ++bus)
-        for (uint8_t slot = 0; slot < 32; ++slot)
-            if (pci_get_vendor(bus, slot) != 0xFFFF) {
-                pci_devs[total_devs++] = (bus << 8) | slot;
+/* ══════════════════════════════════════════════════════════════════════════
+ *  uidemo — minimal compositor loop proving the DE/WM foundation:
+ *  gfx backbuffer + primitives, event queue, dragging, z-order, cursor.
+ *  ESC exits back to the text shell.
+ * ══════════════════════════════════════════════════════════════════════════ */
+static void uidemo_run(void) {
+    gfx_surface_t *scr = gfx_screen();
+    const int32_t W = scr->w, H = scr->h;
+    const int32_t TITLE_H = 24;
+
+    /* Two windows: position, size, z-order (top = drawn last) */
+    int32_t wx[2] = { W / 2 - 320, W / 2 + 16 };
+    int32_t wy[2] = { 96, 200 };
+    int32_t ww = 300, wh = 200;
+    int     top = 1;
+    int     drag = -1;
+    int32_t drag_ox = 0, drag_oy = 0;
+
+    int32_t mx = W / 2, my = H / 2;
+    uint64_t frames = 0;
+
+    /* Off-screen surface blitted into window 0 — exercises kmalloc/kfree */
+    gfx_surface_t *pat = gfx_surface_create(64, 64);
+    if (pat) {
+        for (int32_t y = 0; y < 64; y++)
+            for (int32_t x = 0; x < 64; x++)
+                pat->px[y * 64 + x] = ((x ^ y) & 8) ? 0x00E0A030 : 0x00305090;
+    }
+
+    event_init();   /* flush anything typed before the demo */
+
+    int running = 1;
+    while (running) {
+        /* ── Input ── */
+        event_t ev;
+        while (event_poll(&ev)) {
+            switch (ev.type) {
+            case EV_KEY_DOWN:
+                if (ev.code == 0x01) running = 0;   /* ESC */
+                break;
+            case EV_MOUSE_MOVE:
+                mx = ev.x; my = ev.y;
+                if (drag >= 0) { wx[drag] = mx - drag_ox; wy[drag] = my - drag_oy; }
+                break;
+            case EV_MOUSE_DOWN:
+                if (ev.code == MOUSE_BTN_LEFT) {
+                    int order[2] = { top, 1 - top };
+                    for (int k = 0; k < 2; k++) {
+                        int i = order[k];
+                        if (ev.x >= wx[i] && ev.x < wx[i] + ww &&
+                            ev.y >= wy[i] && ev.y < wy[i] + TITLE_H) {
+                            drag = i;
+                            drag_ox = ev.x - wx[i];
+                            drag_oy = ev.y - wy[i];
+                            top = i;
+                            break;
+                        }
+                    }
+                }
+                break;
+            case EV_MOUSE_UP:
+                if (ev.code == MOUSE_BTN_LEFT) drag = -1;
+                break;
             }
+        }
+
+        /* ── Compose frame into the backbuffer ── */
+        gfx_fill(scr, 0x001A3A52);                       /* desktop        */
+        gfx_fill_rect(scr, 0, H - 32, W, 32, 0x00202020); /* taskbar       */
+        gfx_draw_text(scr, 8, H - 24, "CoolFrost UI demo  |  drag windows by title, ESC to exit",
+                      0x00C0C0C0, GFX_TRANSPARENT);
+
+        for (int k = 0; k < 2; k++) {
+            int i = (k == 0) ? (1 - top) : top;   /* bottom window first */
+            uint32_t tcol = (i == top) ? 0x004070C0 : 0x00505860;
+            gfx_fill_rect(scr, wx[i], wy[i], ww, wh, 0x00E8E8E8);
+            gfx_fill_rect(scr, wx[i], wy[i], ww, TITLE_H, tcol);
+            gfx_draw_rect(scr, wx[i], wy[i], ww, wh, 0x00101010);
+            gfx_draw_text(scr, wx[i] + 8, wy[i] + 4,
+                          (i == 0) ? "window 0" : "window 1",
+                          0x00FFFFFF, GFX_TRANSPARENT);
+            if (i == 0 && pat)
+                gfx_blit(scr, wx[i] + 16, wy[i] + TITLE_H + 16, pat);
+            if (i == 1) {
+                char buf[32];
+                gfx_draw_text(scr, wx[i] + 16, wy[i] + TITLE_H + 16,
+                              "frames:", 0x00202020, GFX_TRANSPARENT);
+                int_to_ascii((int)frames, buf);
+                gfx_draw_text(scr, wx[i] + 16 + 8 * 8, wy[i] + TITLE_H + 16,
+                              buf, 0x00202020, GFX_TRANSPARENT);
+            }
+        }
+
+        gfx_draw_cursor(scr, mx, my);
+        gfx_present();
+        frames++;
+        sleep_ms(16);
+    }
+
+    gfx_surface_destroy(pat);
+    clear_screen();   /* back to text console */
+}
+
+void pci_scan_devs() {
+    /* Entry encoding: bus[15:8] | slot[7:3] | func[2:0] */
+    for (uint16_t bus = 0; bus < 256; ++bus)
+        for (uint8_t slot = 0; slot < 32; ++slot) {
+            uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+            for (uint8_t func = 0; func < nfunc; ++func)
+                if (pci_get_vendor(bus, slot, func) != 0xFFFF) {
+                    pci_devs[total_devs++] = (uint16_t)((bus << 8) | (slot << 3) | func);
+                }
+        }
 }
 
 void kernel_main(uintptr_t magic, uintptr_t addr) {
@@ -245,6 +381,9 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
     /* Bring up Application Processors */
     smp_init();
     printf("SMP: %d CPU(s) online\n", smp_cpu_count);
+
+    /* Enable preemptive scheduling — current thread becomes the idle task */
+    sched_run();
 
     while (1) {
         kprint("\n> ");
@@ -558,16 +697,18 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             if (n == 0) {
                 kprint("No tasks submitted yet\n");
             } else {
-                kprint(" ID  CPU  State    Name\n");
-                static const char *states[] = {"ready  ", "running", "done   "};
+                kprint(" ID  PRI  CPU  Slice  State    Name\n");
                 for (int i = 0; i < n; i++) {
                     task_t *t = sched_get_task(i);
-                    if (!t) continue;
-                    const char *st = (t->state <= TASK_DONE) ? states[t->state] : "???    ";
+                    if (!t || t->state == TASK_FREE) continue;
+                    const char *st = sched_state_name(t->state);
                     if (t->cpu_id >= 0)
-                        printf("  %d   %d   %s  %s\n", t->id, t->cpu_id, st, t->name);
+                        printf("  %d   %d   %d   %3u   %-7s  %s\n",
+                               t->id, t->priority, t->cpu_id,
+                               t->timeslice, st, t->name);
                     else
-                        printf("  %d   -   %s  %s\n", t->id, st, t->name);
+                        printf("  %d   %d   -   %3u   %-7s  %s\n",
+                               t->id, t->priority, t->timeslice, st, t->name);
                 }
             }
         } else if (strcmp(cmd_buf, "smptest") == 0) {
@@ -587,8 +728,8 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     gpu_info_t *g = &gpu_list[i];
                     printf("GPU %d: %s (0x%X) — %s\n",
                            i, g->vendor_name, g->device_id, g->type_name);
-                    printf("  Bus %u Slot %u  VendorID: 0x%X\n",
-                           g->bus, g->slot, g->vendor_id);
+                    printf("  Bus %u Slot %u Func %u  VendorID: 0x%X\n",
+                           g->bus, g->slot, g->func, g->vendor_id);
                     if (g->bar0_size > 0)
                         printf("  BAR0: 0x%lX  size: %lu MB\n",
                                g->bar0_base, g->bar0_size / (1024 * 1024));
@@ -606,6 +747,27 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     }
                 }
             }
+        } else if (strcmp(cmd_buf, "usbinfo") == 0) {
+            int udev_cnt = usb_device_count();
+            if (udev_cnt == 0) {
+                kprint("No USB devices found (no xHCI or no devices connected)\n");
+            } else {
+                printf("%d USB device(s):\n", udev_cnt);
+                for (int i = 0; i < udev_cnt; i++) {
+                    usb_device_t *ud = usb_get_device(i);
+                    if (!ud || !ud->valid) continue;
+                    printf("  [%d] Port %d  Slot %d  Speed %s  USB%d.%d\n",
+                           i, ud->port, ud->slot,
+                           usb_speed_str(ud->speed),
+                           (ud->bcd_usb >> 8) & 0xFF,
+                           (ud->bcd_usb >> 4) & 0x0F);
+                    printf("       VID:PID  %04X:%04X\n",
+                           (unsigned)ud->vid, (unsigned)ud->pid);
+                    printf("       Class %02X  Sub %02X  Proto %02X  MaxPkt0 %d\n",
+                           (unsigned)ud->dev_class, (unsigned)ud->subclass,
+                           (unsigned)ud->proto, (unsigned)ud->max_pkt0);
+                }
+            }
         } else if (strcmp(cmd_buf, "help") == 0) {
             kprint_attr("CoolFrost Help:\n"
                         "====================\n"
@@ -621,6 +783,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "charmap - character map of 437 Code Page\n"
                         "pciinfo - list of PCI devices\n"
                         "gpuinfo - show GPU/display controller info\n"
+                        "usbinfo - list USB devices via xHCI\n"
                         "cpucount - show number of online CPUs\n"
                         "ps - list submitted tasks and their status\n"
                         "smptest - submit parallel tasks to all CPUs\n"
@@ -634,7 +797,113 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                         "ping <ip>  - send ICMP echo (real)\n"
                         "ifconfig   - show network interface\n"
                         "dhcp       - renew DHCP lease\n"
+                        "mouse      - show PS/2 mouse position and buttons\n"
+                        "utf8test   - UTF-8 encode/decode demo\n"
                         "poweroff - shut down the system\n", GREEN_FG);
+        } else if (strcmp(cmd_buf, "uidemo") == 0) {
+            if (gfx_init() != 0)
+                kprint("uidemo: no 32bpp linear framebuffer (VGA text mode)\n");
+            else
+                uidemo_run();
+        } else if (strcmp(cmd_buf, "wm") == 0) {
+            /* Phase B: the WM runs as a ring3 task (user/wm.c), isolated
+             * from the kernel by the ring3 infra ring3test exercises.
+             * sched_submit_user() only enqueues it — block here (yielding,
+             * not busy-spinning the CPU) until it's done, the same way
+             * uidemo_run() used to run synchronously. Both the WM and the
+             * shell's own getline() read keystrokes through the single-
+             * consumer ui/event.c queue, so they can never run at once. */
+            if (gfx_init() != 0) {
+                kprint("wm: no 32bpp linear framebuffer (VGA text mode)\n");
+            } else {
+                int slot = sched_submit_user("wm", wm_run, (void *)0);
+                if (slot < 0) {
+                    kprint_attr("wm: sched_submit_user failed\n", RED_FG);
+                } else {
+                    task_t *t = sched_get_task(slot);
+                    while (t->state != TASK_DONE) sched_yield();
+                    kprint("wm: exited\n");
+                }
+            }
+        } else if (strcmp(cmd_buf, "ring3test") == 0) {
+            /* A5.5 smoke test: verifies GDT/TSS/iretq-frame/RSP0 plumbing
+             * before anything WM-shaped is built on ring3. */
+            kprint("submitting user_smoke_ok (should exit cleanly)...\n");
+            if (sched_submit_user("smoke-ok", user_smoke_ok, (void *)0) < 0)
+                kprint_attr("sched_submit_user failed\n", RED_FG);
+            sleep_ms(200);
+            kprint("submitting user_smoke_fault (should be killed, not hang)...\n");
+            if (sched_submit_user("smoke-fault", user_smoke_fault, (void *)0) < 0)
+                kprint_attr("sched_submit_user failed\n", RED_FG);
+            sleep_ms(200);
+            kprint("ring3test: if you're reading this, the kernel is still alive.\n");
+        } else if (strcmp(cmd_buf, "mouse") == 0) {
+            int ps2_ok = mouse_present();
+            int usb_ok = usbhid_mouse_present();
+            int kbd_ok = usbhid_kbd_present();
+            if (kbd_ok)
+                kprint("USB keyboard: present\n");
+            if (!ps2_ok && !usb_ok) {
+                kprint("No mouse detected (PS/2 or USB)\n");
+            } else {
+                int32_t mx = mouse_get_x(), my = mouse_get_y();
+                uint8_t mb = mouse_get_buttons();
+                printf("%s mouse: x=%d y=%d  buttons: %s%s%s\n",
+                       ps2_ok ? "PS/2" : "USB",
+                       mx, my,
+                       (mb & MOUSE_BTN_LEFT)   ? "L" : "-",
+                       (mb & MOUSE_BTN_MIDDLE) ? "M" : "-",
+                       (mb & MOUSE_BTN_RIGHT)  ? "R" : "-");
+            }
+        } else if (strcmp(cmd_buf, "utf8test") == 0) {
+            /* Encode a few code points, print hex, decode back */
+            static const rune_t test_cps[] = {
+                0x0048, 0x0065, 0x006C, 0x006C, 0x006F,  /* Hello */
+                0x0020,                                     /* space */
+                0x00E9, 0x00E8, 0x00EA,                    /* é è ê */
+                0x0020,
+                0x03B1, 0x03C9,                            /* α ω   */
+                0x0020,
+                0x4E16, 0x754C,                            /* 世界  */
+                0x0020,
+                0x1F600,                                   /* 😀    */
+                0,
+            };
+            char buf[128];
+            char *p = buf;
+            char *end = buf + sizeof(buf) - 1;
+            for (int i = 0; test_cps[i]; i++) {
+                int blen = utf8_byte_len(test_cps[i]);
+                if (p + blen >= end) break;
+                p += utf8_encode(test_cps[i], p);
+            }
+            *p = '\0';
+
+            /* Print the string (screen handles ASCII; non-ASCII shows as '?') */
+            printf("String : %s\n", buf);
+            printf("Bytes  : %d  Codepoints: %d\n",
+                   (int)(p - buf), (int)utf8_strlen(buf));
+            printf("Valid  : %s\n", utf8_valid(buf, (size_t)-1) ? "yes" : "no");
+
+            /* Print hex */
+            kprint("Hex    : ");
+            static const char hx[] = "0123456789abcdef";
+            for (char *c = buf; *c; c++) {
+                unsigned char b = (unsigned char)*c;
+                char hs[3] = { hx[b>>4], hx[b&0xf], ' ' };
+                kprint(hs);
+            }
+            kprint("\n");
+
+            /* Decode back and print code points */
+            kprint("Runes  : ");
+            const char *rp = buf;
+            while (*rp) {
+                rune_t cp = utf8_decode(&rp);
+                if (cp == RUNE_EOF) break;
+                printf("U+%04lX ", (uint64_t)cp);
+            }
+            kprint("\n");
         } else if (strcmp(cmd_buf, "reboot") == 0) {
             reboot();
         } else if (strcmp(cmd_buf, "charmap") == 0) {
@@ -688,9 +957,10 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
             printf("Press 1/2 to select device\n");
             printf("Press ESC to quit\n");
             while (1) {
-                uint8_t bus = (pci_devs[cur_index] >> 8) & 0xFF;
-                uint8_t slot = pci_devs[cur_index] & 0xFF;
-                pci_base_device_header_t header = pci_get_base_device_header(bus, slot);
+                uint8_t bus  = (pci_devs[cur_index] >> 8) & 0xFF;
+                uint8_t slot = (pci_devs[cur_index] >> 3) & 0x1F;
+                uint8_t func = pci_devs[cur_index] & 0x07;
+                pci_base_device_header_t header = pci_get_base_device_header(bus, slot, func);
 
                 set_cursor_offset(get_offset(0, 3));
                 printf("%c", BoxCrnLeftUp);
@@ -698,7 +968,7 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                     printf("%c", BoxLineHorz);
                 printf("%c", BoxCrnRightUp);
 
-                printf("%cBus: 0x%X Slot: 0x%X\n", BoxLineVert, bus, slot);
+                printf("%cBus: 0x%X Slot: 0x%X Func: %d\n", BoxLineVert, bus, slot, func);
                 set_cursor_offset(get_offset(79, 4));
                 printf("%c\n", BoxLineVert);
 

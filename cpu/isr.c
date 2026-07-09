@@ -6,6 +6,7 @@
 #include "timer.h"
 #include "ports.h"
 #include "rtc.h"
+#include "sched.h"
 
 isr_t interrupt_handlers[256];
 
@@ -125,6 +126,16 @@ void isr_handler(registers_t *r) {
     kprint("\n");
     kprint(exception_messages[r->int_no]);
     kprint("\n");
+
+    /* CS RPL==3 means whatever faulted was a ring3 task (see cpu/gdt.h) —
+     * kill just that task instead of falling through to the iretq below,
+     * which would otherwise resume (or re-fault forever on) a context we
+     * know is broken. Kernel-mode faults (RPL==0) are unrelated to this —
+     * still print-and-return, same as before this existed. */
+    if ((r->cs & 0x3) == 3) {
+        kprint("user task killed\n");
+        sched_kill_current();
+    }
 }
 
 void register_interrupt_handler(uint8_t n, isr_t handler) {

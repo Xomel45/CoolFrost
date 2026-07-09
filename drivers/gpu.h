@@ -20,6 +20,7 @@
 typedef struct {
     uint8_t  bus;
     uint8_t  slot;
+    uint8_t  func;
     uint16_t vendor_id;
     uint16_t device_id;
     uint8_t  subclass;   /* 0x00=VGA, 0x02=3D, 0x80=other */

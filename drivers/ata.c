@@ -274,8 +274,7 @@ int ata_read_partitions(uint8_t drive_idx, mbr_partition_t parts[4]) {
         return -2;
 
     /* Partition table starts at offset 446, four 16-byte entries */
-    /* memcpy(source, dest, n) — note: CoolFrost's memcpy has source first */
-    memcpy((uint8_t *)&mbr[446], (uint8_t *)parts, sizeof(mbr_partition_t) * 4);
+    memcpy((uint8_t *)parts, (uint8_t *)&mbr[446], sizeof(mbr_partition_t) * 4);
 
     return 0;
 }
@@ -389,8 +388,7 @@ int ata_read_gpt(uint8_t drive_idx, gpt_partition_entry_t *entries, int max) {
         if (guid_is_zero(&pe->type_guid))
             continue;
 
-        /* memcpy(source, dest, n) — CoolFrost non-standard order */
-        memcpy((uint8_t *)pe, (uint8_t *)&entries[found], (int)sizeof(gpt_partition_entry_t));
+        memcpy((uint8_t *)&entries[found], (uint8_t *)pe, (int)sizeof(gpt_partition_entry_t));
         found++;
     }
 
@@ -443,7 +441,7 @@ int blk_read_mbr_partitions(uint8_t type, uint8_t drv, mbr_partition_t parts[4])
         return -1;
     if (mbr[510] != 0x55 || mbr[511] != 0xAA)
         return -2;
-    memcpy((uint8_t *)&mbr[446], (uint8_t *)parts, sizeof(mbr_partition_t) * 4);
+    memcpy((uint8_t *)parts, (uint8_t *)&mbr[446], sizeof(mbr_partition_t) * 4);
     return 0;
 }
 
@@ -485,8 +483,7 @@ int blk_read_gpt(uint8_t type, uint8_t drv, gpt_partition_entry_t *entries, int 
         if (guid_is_zero(&pe->type_guid))
             continue;
 
-        /* memcpy(source, dest, n) — CoolFrost order */
-        memcpy((uint8_t *)pe, (uint8_t *)&entries[found], (int)sizeof(gpt_partition_entry_t));
+        memcpy((uint8_t *)&entries[found], (uint8_t *)pe, (int)sizeof(gpt_partition_entry_t));
         found++;
     }
     return found;

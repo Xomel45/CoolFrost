@@ -63,22 +63,21 @@ void *k_heapBMAlloc(KHEAPBM *heap, size_t size) {
                   : size / b->bsize;
             bm = (uint8_t *)&b[1];
 
-            for (x = (b->lfb + 1 >= bcnt ? 0 : b->lfb + 1); x < b->lfb; ++x) {
-                if (x >= bcnt) x = 0;
-
+            for (x = 0; x + bneed <= bcnt; ++x) {
                 if (bm[x] == 0) {
-                    for (y = 0; bm[x + y] == 0 && y < bneed && (x + y) < bcnt; ++y);
+                    for (y = 0; y < bneed && bm[x + y] == 0; ++y);
 
                     if (y == bneed) {
-                        nid = k_heapBMGetNID(bm[x - 1], bm[x + y]);
+                        uint8_t prev = (x > 0) ? bm[x - 1] : 0;
+                        uint8_t next = (x + y < bcnt) ? bm[x + y] : 0;
+                        nid = k_heapBMGetNID(prev, next);
                         for (z = 0; z < y; ++z) bm[x + z] = nid;
-                        b->lfb  = (x + bneed) - 2;
+                        b->lfb  = x + bneed - 1;
                         b->used += y;
                         return (void *)(x * b->bsize + (uintptr_t)&b[1]);
                     }
 
-                    x += (y - 1);
-                    continue;
+                    x += y;   /* skip past the too-short free run */
                 }
             }
         }
@@ -103,7 +102,7 @@ void k_heapBMFree(KHEAPBM *heap, void *ptr) {
             bm = (uint8_t *)&b[1];
             id = bm[bi];
             max = b->size / b->bsize;
-            for (x = bi; bm[x] == id && x < max; ++x) bm[x] = 0;
+            for (x = bi; x < max && bm[x] == id; ++x) bm[x] = 0;
             b->used -= x - bi;
             return;
         }

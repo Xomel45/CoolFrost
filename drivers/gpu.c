@@ -10,8 +10,8 @@ static const uint8_t bar_offsets[6] = { 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24 };
  * Returns the base address of BARn (32-bit or lower 32 bits of 64-bit).
  * Memory BARs have bit[0]=0; I/O BARs have bit[0]=1.
  */
-static uint32_t read_bar(uint8_t bus, uint8_t slot, uint8_t bar) {
-    return pci_config_read_dword(bus, slot, 0, bar_offsets[bar]);
+static uint32_t read_bar(uint8_t bus, uint8_t slot, uint8_t func, uint8_t bar) {
+    return pci_config_read_dword(bus, slot, func, bar_offsets[bar]);
 }
 
 /*
@@ -19,17 +19,17 @@ static uint32_t read_bar(uint8_t bus, uint8_t slot, uint8_t bar) {
  * Returns 0 for I/O BARs or if the BAR is unimplemented.
  * For 64-bit BARs only the lower 32 bits of the size are returned.
  */
-static uint64_t probe_bar_size(uint8_t bus, uint8_t slot, uint8_t bar) {
+static uint64_t probe_bar_size(uint8_t bus, uint8_t slot, uint8_t func, uint8_t bar) {
     uint8_t  off     = bar_offsets[bar];
-    uint32_t orig    = pci_config_read_dword(bus, slot, 0, off);
+    uint32_t orig    = pci_config_read_dword(bus, slot, func, off);
 
     /* I/O BAR — skip */
     if (orig & 1) return 0;
 
     /* Write all-ones, read size mask, restore */
-    pci_config_write_dword(bus, slot, 0, off, 0xFFFFFFFF);
-    uint32_t mask = pci_config_read_dword(bus, slot, 0, off);
-    pci_config_write_dword(bus, slot, 0, off, orig);
+    pci_config_write_dword(bus, slot, func, off, 0xFFFFFFFF);
+    uint32_t mask = pci_config_read_dword(bus, slot, func, off);
+    pci_config_write_dword(bus, slot, func, off, orig);
 
     if (mask == 0 || mask == 0xFFFFFFFF) return 0;
 
@@ -66,11 +66,11 @@ static const char *display_type(uint8_t subclass) {
  *   Bits [3:0]  — Current Link Speed  (1=Gen1, 2=Gen2, 3=Gen3, 4=Gen4)
  *   Bits [9:4]  — Negotiated Link Width
  */
-static void read_pcie_link(uint8_t bus, uint8_t slot, uint8_t cap_off,
+static void read_pcie_link(uint8_t bus, uint8_t slot, uint8_t func, uint8_t cap_off,
                            uint8_t *out_gen, uint8_t *out_width)
 {
     /* Link Status is the upper word of the dword at cap_off + 0x10 */
-    uint32_t dw   = pci_config_read_dword(bus, slot, 0, cap_off + 0x10);
+    uint32_t dw   = pci_config_read_dword(bus, slot, func, cap_off + 0x10);
     uint16_t lsts = (uint16_t)(dw >> 16);
 
     uint8_t spd = lsts & 0x0F;
@@ -88,23 +88,26 @@ int gpu_scan(gpu_info_t *out, int max_count) {
 
     for (uint16_t bus = 0; bus < 256 && found < max_count; bus++) {
         for (uint8_t slot = 0; slot < 32 && found < max_count; slot++) {
-            uint16_t vid = pci_get_vendor((uint8_t)bus, slot);
+          uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+          for (uint8_t func = 0; func < nfunc && found < max_count; func++) {
+            uint16_t vid = pci_get_vendor((uint8_t)bus, slot, func);
             if (vid == 0xFFFF) continue;
 
-            uint8_t cls = pci_get_class_code((uint8_t)bus, slot);
+            uint8_t cls = pci_get_class_code((uint8_t)bus, slot, func);
             if (cls != PCI_CLASS_DISPLAY) continue;
 
             gpu_info_t *g = &out[found++];
             g->bus        = (uint8_t)bus;
             g->slot       = slot;
+            g->func       = func;
             g->vendor_id  = vid;
-            g->device_id  = pci_get_device((uint8_t)bus, slot);
-            g->subclass   = pci_get_subclass((uint8_t)bus, slot);
+            g->device_id  = pci_get_device((uint8_t)bus, slot, func);
+            g->subclass   = pci_get_subclass((uint8_t)bus, slot, func);
             g->vendor_name = vendor_name(vid);
             g->type_name   = display_type(g->subclass);
 
             /* BAR0 */
-            uint32_t bar0 = read_bar((uint8_t)bus, slot, 0);
+            uint32_t bar0 = read_bar((uint8_t)bus, slot, func, 0);
             if (bar0 & 1) {
                 /* I/O BAR — base is bits [31:2] */
                 g->bar0_base = bar0 & ~(uint32_t)0x3;
@@ -114,23 +117,24 @@ int gpu_scan(gpu_info_t *out, int max_count) {
                 g->bar0_base = bar0 & ~(uint32_t)0xF;
                 /* For 64-bit BARs combine with BAR1 */
                 if (((bar0 >> 1) & 0x3) == 2) {
-                    uint32_t bar1 = read_bar((uint8_t)bus, slot, 1);
+                    uint32_t bar1 = read_bar((uint8_t)bus, slot, func, 1);
                     g->bar0_base |= (uint64_t)bar1 << 32;
                 }
-                g->bar0_size = probe_bar_size((uint8_t)bus, slot, 0);
+                g->bar0_size = probe_bar_size((uint8_t)bus, slot, func, 0);
             }
 
             /* PCIe capability */
-            uint8_t cap_off = pci_find_cap((uint8_t)bus, slot, 0, PCI_CAP_ID_PCIE);
+            uint8_t cap_off = pci_find_cap((uint8_t)bus, slot, func, PCI_CAP_ID_PCIE);
             if (cap_off) {
                 g->is_pcie = 1;
-                read_pcie_link((uint8_t)bus, slot, cap_off,
+                read_pcie_link((uint8_t)bus, slot, func, cap_off,
                                &g->pcie_gen, &g->pcie_width);
             } else {
                 g->is_pcie    = 0;
                 g->pcie_gen   = 0;
                 g->pcie_width = 0;
             }
+          }
         }
     }
 

@@ -44,7 +44,7 @@ void get_cpu_manufacturer(char *to) {
     cpu.s.edx = edx;
     cpu.s.ecx = ecx;
     cpu.str[12] = 0;
-    memcpy(cpu.str, to, 13);
+    memcpy(to, cpu.str, 13);
 }
 
 uint8_t get_cpu_human_id(char *to) {

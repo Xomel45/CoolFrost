@@ -1,22 +1,17 @@
 #include "timer.h"
 #include "isr.h"
 #include "ports.h"
+#include "sched.h"
 #include "../libc/function.h"
+#include "../drivers/usbhid.h"
 
 uint64_t tick = 0;
 static uint64_t pit_freq;
 
 static void timer_callback(registers_t *regs) {
     tick++;
-    // if (tick % 100 == 0) {
-    //     char buf[33];
-    //     void *args[1] = {
-    //         &tick
-    //     };
-    //     strfmt("%u\n", buf, 33, args);
-    //     kprint(buf);
-    // }
-
+    sched_tick();
+    usbhid_poll();
     UNUSED(regs);
 }
 

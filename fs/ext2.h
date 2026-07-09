@@ -112,6 +112,14 @@ typedef struct __attribute__((packed)) {
     uint32_t ee_start_lo;           /* lower 32 bits of physical     */
 } ext4_extent_t;
 
+/* Internal (index) node entry — points to a child extent tree block */
+typedef struct __attribute__((packed)) {
+    uint32_t ei_block;              /* covers logical blocks >= this */
+    uint32_t ei_leaf_lo;            /* lower 32 bits of child block  */
+    uint16_t ei_leaf_hi;            /* upper 16 bits of child block  */
+    uint16_t ei_unused;
+} ext4_extent_idx_t;
+
 /* ── Internal mounted state ───────────────────────────────────────────── */
 typedef struct {
     uint8_t  drive;

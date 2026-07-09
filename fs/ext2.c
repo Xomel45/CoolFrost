@@ -79,30 +79,54 @@ static int read_inode(ext2_fs_t *fs, uint32_t ino, ext2_inode_t *out) {
     if (read_block(fs, inode_blk, meta_buf) != 0)
         return -1;
 
-    /* memcpy(source, dest, n) — CoolFrost non-standard order */
-    memcpy(&meta_buf[inode_off], (uint8_t *)out, (int)sizeof(ext2_inode_t));
+    memcpy((uint8_t *)out, &meta_buf[inode_off], (int)sizeof(ext2_inode_t));
+    return 0;
+}
+
+/* Walk the ext4 extent tree from `eh` down to the leaf containing `logical`.
+ * Index nodes are read into ind_buf; entries within a node are sorted by
+ * first logical block, so we descend into the last entry <= logical. */
+static uint32_t ext4_extent_lookup(ext2_fs_t *fs, ext4_extent_header_t *eh,
+                                   uint32_t logical) {
+    for (int level = 0; level < 8; level++) {   /* depth is tiny in practice */
+        if (eh->eh_magic != EXT4_EXT_MAGIC) return 0;
+
+        if (eh->eh_depth == 0) {
+            ext4_extent_t *ext = (ext4_extent_t *)(eh + 1);
+            for (uint16_t i = 0; i < eh->eh_entries; i++) {
+                uint16_t len = ext[i].ee_len;
+                if (len > 32768) continue;   /* unwritten extent — hole */
+                if (logical >= ext[i].ee_block &&
+                    logical <  ext[i].ee_block + len)
+                    return ext[i].ee_start_lo + (logical - ext[i].ee_block);
+            }
+            return 0;   /* hole */
+        }
+
+        /* Index node: pick the last entry whose ei_block <= logical */
+        ext4_extent_idx_t *idx = (ext4_extent_idx_t *)(eh + 1);
+        if (eh->eh_entries == 0 || logical < idx[0].ei_block) return 0;
+        uint16_t k = 0;
+        while (k + 1 < eh->eh_entries && idx[k + 1].ei_block <= logical)
+            k++;
+
+        if (read_block(fs, idx[k].ei_leaf_lo, ind_buf) != 0)
+            return 0;
+        eh = (ext4_extent_header_t *)ind_buf;
+    }
     return 0;
 }
 
 /* Resolve a logical block number to a physical block number.
- * Handles direct blocks, single indirect, and ext4 extents (depth 0). */
+ * Handles direct, single/double/triple indirect blocks and ext4 extents. */
 static uint32_t get_block(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t logical) {
     uint32_t ptrs = fs->block_size / 4;
 
     /* ── ext4 extents ── */
-    if (inode->i_flags & EXT4_EXTENTS_FL) {
-        ext4_extent_header_t *eh = (ext4_extent_header_t *)inode->i_block;
-        if (eh->eh_magic != EXT4_EXT_MAGIC) return 0;
-        if (eh->eh_depth == 0) {
-            ext4_extent_t *ext = (ext4_extent_t *)(eh + 1);
-            for (uint16_t i = 0; i < eh->eh_entries; i++) {
-                if (logical >= ext[i].ee_block &&
-                    logical <  ext[i].ee_block + ext[i].ee_len)
-                    return ext[i].ee_start_lo + (logical - ext[i].ee_block);
-            }
-        }
-        return 0;   /* depth > 0 not supported yet */
-    }
+    if (inode->i_flags & EXT4_EXTENTS_FL)
+        return ext4_extent_lookup(fs,
+                                  (ext4_extent_header_t *)inode->i_block,
+                                  logical);
 
     /* ── Direct blocks (0-11) ── */
     if (logical < 12)
@@ -130,7 +154,24 @@ static uint32_t get_block(ext2_fs_t *fs, ext2_inode_t *inode, uint32_t logical) 
         return ((uint32_t *)ind_buf)[logical % ptrs];
     }
 
-    return 0;   /* triple indirect — not supported */
+    /* ── Triple indirect ── */
+    logical -= ptrs * ptrs;
+    if (logical / ptrs / ptrs < ptrs) {
+        if (inode->i_block[14] == 0) return 0;
+        if (read_block(fs, inode->i_block[14], ind_buf) != 0)
+            return 0;
+        uint32_t ind2 = ((uint32_t *)ind_buf)[logical / (ptrs * ptrs)];
+        if (ind2 == 0) return 0;
+        if (read_block(fs, ind2, ind_buf) != 0)
+            return 0;
+        uint32_t ind3 = ((uint32_t *)ind_buf)[(logical / ptrs) % ptrs];
+        if (ind3 == 0) return 0;
+        if (read_block(fs, ind3, ind_buf) != 0)
+            return 0;
+        return ((uint32_t *)ind_buf)[logical % ptrs];
+    }
+
+    return 0;   /* beyond triple indirect range */
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -314,8 +355,7 @@ int ext2_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
         if (copy > size - bytes_read)
             copy = size - bytes_read;
 
-        /* memcpy(source, dest, n) — CoolFrost non-standard order */
-        memcpy(&block_buf[blk_o], &out[bytes_read], (int)copy);
+        memcpy(&out[bytes_read], &block_buf[blk_o], (int)copy);
         bytes_read += copy;
     }
 

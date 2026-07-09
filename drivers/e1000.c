@@ -50,8 +50,9 @@
 #define DESC_DD  0x01u  /* Descriptor Done */
 
 /* ── Ring parameters ──────────────────────────────────────────────────────── */
-#define RX_RING_SIZE  8
-#define TX_RING_SIZE  8
+/* Must be a multiple of 8 (RDLEN/TDLEN are in 128-byte units) */
+#define RX_RING_SIZE  64
+#define TX_RING_SIZE  64
 #define RX_BUF_SIZE   2048
 
 /* ── Rx descriptor (16 bytes) ─────────────────────────────────────────────── */
@@ -76,8 +77,8 @@ typedef struct __attribute__((packed)) {
 } e1000_tx_desc_t;
 
 /* ── Static DMA memory ───────────────────────────────────────────────────── */
-static e1000_rx_desc_t rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
-static e1000_tx_desc_t tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
+static e1000_rx_desc_t rx_ring[RX_RING_SIZE] __attribute__((aligned(128)));
+static e1000_tx_desc_t tx_ring[TX_RING_SIZE] __attribute__((aligned(128)));
 static uint8_t rx_bufs[RX_RING_SIZE][RX_BUF_SIZE] __attribute__((aligned(4096)));
 static uint8_t tx_buf[2048] __attribute__((aligned(4096)));
 
@@ -105,17 +106,17 @@ static uint16_t eerd_read(uint8_t addr) {
 }
 
 /* ── Initialise one E1000 controller ─────────────────────────────────────── */
-static int e1000_init_one(uint8_t bus, uint8_t slot) {
+static int e1000_init_one(uint8_t bus, uint8_t slot, uint8_t func) {
     /* Enable memory space + bus master in PCI command register */
-    uint32_t cmd = pci_config_read_dword(bus, slot, 0, 0x04);
+    uint32_t cmd = pci_config_read_dword(bus, slot, func, 0x04);
     cmd |= 0x06u;
-    pci_config_write_dword(bus, slot, 0, 0x04, cmd);
+    pci_config_write_dword(bus, slot, func, 0x04, cmd);
 
     /* Read 32-bit BAR0 */
-    uint32_t bar_raw = pci_config_read_dword(bus, slot, 0, 0x10);
+    uint32_t bar_raw = pci_config_read_dword(bus, slot, func, 0x10);
     if (bar_raw & 1u) return -1;           /* I/O BAR — skip */
     if ((bar_raw & 0x6u) == 0x4u) {        /* 64-bit BAR */
-        uint32_t bar_hi = pci_config_read_dword(bus, slot, 0, 0x14);
+        uint32_t bar_hi = pci_config_read_dword(bus, slot, func, 0x14);
         bar0 = ((uint64_t)bar_hi << 32) | (bar_raw & ~0xFu);
     } else {
         bar0 = bar_raw & ~0xFu;
@@ -202,23 +203,26 @@ static int e1000_init_one(uint8_t bus, uint8_t slot) {
 int e1000_init(void) {
     for (uint16_t bus = 0; bus < 256; bus++) {
         for (uint8_t slot = 0; slot < 32; slot++) {
-            if (pci_get_vendor(bus, slot) != 0x8086) continue;
-            if (pci_get_class_code(bus, slot) != 0x02) continue;
-            if (pci_get_subclass(bus, slot)   != 0x00) continue;
+            uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+            for (uint8_t func = 0; func < nfunc; func++) {
+                if (pci_get_vendor(bus, slot, func) != 0x8086) continue;
+                if (pci_get_class_code(bus, slot, func) != 0x02) continue;
+                if (pci_get_subclass(bus, slot, func)   != 0x00) continue;
 
-            uint16_t dev = (uint16_t)(pci_config_read_dword(bus, slot, 0, 0) >> 16);
-            /* Known e1000-compatible device IDs */
-            if (dev != 0x100E && dev != 0x100F && dev != 0x1000 &&
-                dev != 0x1001 && dev != 0x100C && dev != 0x1010 &&
-                dev != 0x1012 && dev != 0x107C && dev != 0x10D3)
-                continue;
+                uint16_t dev = (uint16_t)(pci_config_read_dword(bus, slot, func, 0) >> 16);
+                /* Known e1000-compatible device IDs */
+                if (dev != 0x100E && dev != 0x100F && dev != 0x1000 &&
+                    dev != 0x1001 && dev != 0x100C && dev != 0x1010 &&
+                    dev != 0x1012 && dev != 0x107C && dev != 0x10D3)
+                    continue;
 
-            if (e1000_init_one((uint8_t)bus, slot) == 0) {
-                printf("e1000: %02x:%02x.0 device %04x  MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
-                       bus, slot, dev,
-                       net_mac.b[0], net_mac.b[1], net_mac.b[2],
-                       net_mac.b[3], net_mac.b[4], net_mac.b[5]);
-                return 0;
+                if (e1000_init_one((uint8_t)bus, slot, func) == 0) {
+                    printf("e1000: %02x:%02x.%d device %04x  MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+                           bus, slot, func, dev,
+                           net_mac.b[0], net_mac.b[1], net_mac.b[2],
+                           net_mac.b[3], net_mac.b[4], net_mac.b[5]);
+                    return 0;
+                }
             }
         }
     }
@@ -230,7 +234,7 @@ int e1000_send(const void *buf, uint16_t len) {
     if (!bar0 || len > 2048) return -1;
 
     /* Copy frame data to the shared Tx bounce buffer */
-    memcpy((uint8_t *)buf, tx_buf, len);
+    memcpy(tx_buf, (uint8_t *)buf, len);
 
     tx_ring[tx_cur].addr    = (uint64_t)(uintptr_t)tx_buf;
     tx_ring[tx_cur].length  = len;
@@ -267,7 +271,7 @@ int e1000_recv(void *buf, uint16_t max_len) {
     if (len > max_len) len = max_len;
 
     /* Copy received data: FROM rx_bufs[rx_cur] TO buf */
-    memcpy(rx_bufs[rx_cur], (uint8_t *)buf, len);
+    memcpy((uint8_t *)buf, rx_bufs[rx_cur], len);
 
     /* Return descriptor to hardware */
     rx_ring[rx_cur].status = 0;

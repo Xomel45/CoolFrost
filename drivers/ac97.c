@@ -71,20 +71,22 @@ int ac97_init(void) {
 
     for (uint16_t bus = 0; bus < 256u; bus++) {
         for (uint8_t slot = 0; slot < 32u; slot++) {
-            if (pci_get_vendor(bus, slot) != 0x8086u) continue;
-            uint16_t dev = (uint16_t)(pci_config_read_dword(bus, slot, 0, 0x00u) >> 16);
+          uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+          for (uint8_t func = 0; func < nfunc; func++) {
+            if (pci_get_vendor(bus, slot, func) != 0x8086u) continue;
+            uint16_t dev = (uint16_t)(pci_config_read_dword(bus, slot, func, 0x00u) >> 16);
             int match = 0;
             for (int k = 0; known[k]; k++) if (known[k] == dev) { match = 1; break; }
             if (!match) continue;
 
             /* Enable I/O space + bus master */
-            uint32_t cmd = pci_config_read_dword(bus, slot, 0, 0x04u);
+            uint32_t cmd = pci_config_read_dword(bus, slot, func, 0x04u);
             cmd |= 0x05u;
-            pci_config_write_dword(bus, slot, 0, 0x04u, cmd);
+            pci_config_write_dword(bus, slot, func, 0x04u, cmd);
 
             /* Read BARs (I/O space) */
-            ac97_nam  = (uint16_t)(pci_config_read_dword(bus, slot, 0, 0x10u) & 0xFFFEu);
-            ac97_nabm = (uint16_t)(pci_config_read_dword(bus, slot, 0, 0x14u) & 0xFFFEu);
+            ac97_nam  = (uint16_t)(pci_config_read_dword(bus, slot, func, 0x10u) & 0xFFFEu);
+            ac97_nabm = (uint16_t)(pci_config_read_dword(bus, slot, func, 0x14u) & 0xFFFEu);
 
             /* Global cold reset: first clear CR field, then set CRST */
             nabm_wl(NABM_GLOB_CNT, 0u);
@@ -123,6 +125,7 @@ int ac97_init(void) {
             printf("ac97: found at NAM=0x%x NABM=0x%x, 48000Hz 16-bit stereo\n",
                    ac97_nam, ac97_nabm);
             return 0;
+          }
         }
     }
     return -1;
@@ -134,8 +137,7 @@ void ac97_play_pcm(const int16_t *frames, uint32_t n_frames) {
     if (n_frames > AC97_MAX_FRAMES) n_frames = AC97_MAX_FRAMES;
 
     uint32_t n_samples = n_frames * 2u;   /* L + R per frame */
-    /* CoolFrost memcpy: source → dest */
-    memcpy((uint8_t *)frames, (uint8_t *)ac97_pcm, n_samples * 2u);
+    memcpy((uint8_t *)ac97_pcm, (uint8_t *)frames, n_samples * 2u);
 
     /* Build BDL: split into ≤65535-sample chunks */
     uint32_t remaining = n_samples;

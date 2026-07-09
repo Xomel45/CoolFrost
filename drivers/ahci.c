@@ -234,18 +234,20 @@ static uint64_t port_identify(int p) {
 int ahci_init(void) {
     for (uint16_t bus = 0; bus < 256u; bus++) {
         for (uint8_t slot = 0; slot < 32u; slot++) {
-            if (pci_get_vendor(bus, slot) == 0xFFFF) continue;
-            if (pci_get_class_code(bus, slot) != 0x01u) continue;
-            if (pci_get_subclass(bus, slot)   != 0x06u) continue;
-            if (pci_get_progif(bus, slot)     != 0x01u) continue;
+          uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+          for (uint8_t func = 0; func < nfunc; func++) {
+            if (pci_get_vendor(bus, slot, func) == 0xFFFF) continue;
+            if (pci_get_class_code(bus, slot, func) != 0x01u) continue;
+            if (pci_get_subclass(bus, slot, func)   != 0x06u) continue;
+            if (pci_get_progif(bus, slot, func)     != 0x01u) continue;
 
             /* Enable bus master + memory space */
-            uint32_t cmd = pci_config_read_dword(bus, slot, 0, 0x04u);
+            uint32_t cmd = pci_config_read_dword(bus, slot, func, 0x04u);
             cmd |= 0x06u;
-            pci_config_write_dword(bus, slot, 0, 0x04u, cmd);
+            pci_config_write_dword(bus, slot, func, 0x04u, cmd);
 
             /* Read BAR5 (ABAR) — AHCI uses a 32-bit memory BAR here */
-            uint32_t bar5 = pci_config_read_dword(bus, slot, 0, 0x24u);
+            uint32_t bar5 = pci_config_read_dword(bus, slot, func, 0x24u);
             bar5 &= ~0xFu;
             ahci_bar = (volatile uint8_t *)(uintptr_t)bar5;
 
@@ -282,6 +284,7 @@ int ahci_init(void) {
                 ahci_ndrive++;
             }
             return ahci_ndrive > 0 ? 0 : -1;
+          }
         }
     }
     return -1;
@@ -294,8 +297,7 @@ int ahci_read_sectors(uint8_t drv, uint64_t lba, uint8_t count, void *buf) {
     int p = ahci_drives[drv].port_idx;
     if (ahci_issue(p, ATA_READ_DMA_EXT, lba, count, ahci_dma, 0) != 0)
         return -1;
-    /* CoolFrost memcpy: source=arg1, dest=arg2 */
-    memcpy(ahci_dma, (uint8_t *)buf, (size_t)count * 512u);
+    memcpy((uint8_t *)buf, ahci_dma, (size_t)count * 512u);
     return 0;
 }
 
@@ -303,7 +305,7 @@ int ahci_write_sectors(uint8_t drv, uint64_t lba, uint8_t count, const void *buf
     if (drv >= (uint8_t)ahci_ndrive || !count) return count ? -1 : 0;
     if (count > AHCI_DMA_SECTS) return -1;
     int p = ahci_drives[drv].port_idx;
-    memcpy((uint8_t *)buf, ahci_dma, (size_t)count * 512u);
+    memcpy(ahci_dma, (uint8_t *)buf, (size_t)count * 512u);
     return ahci_issue(p, ATA_WRITE_DMA_EXT, lba, count, ahci_dma, 1);
 }
 

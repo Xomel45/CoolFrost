@@ -35,12 +35,12 @@ uint32_t pci_config_read_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t 
 }
 
 // 0xFFFF - invalid vendor - non-existent device
-uint16_t pci_get_vendor(uint8_t bus, uint8_t slot) {
-    return pci_config_read_word(bus, slot, 0, 0);
+uint16_t pci_get_vendor(uint8_t bus, uint8_t slot, uint8_t func) {
+    return pci_config_read_word(bus, slot, func, 0);
 }
 
-uint16_t pci_get_device(uint8_t bus, uint8_t slot) {
-    uint32_t vendor_device = pci_config_read_dword(bus, slot, 0, 0);
+uint16_t pci_get_device(uint8_t bus, uint8_t slot, uint8_t func) {
+    uint32_t vendor_device = pci_config_read_dword(bus, slot, func, 0);
     uint16_t vendor = (uint16_t)(vendor_device & 0xFFFF);
     if (vendor != 0xFFFF) {
        return (uint16_t)((vendor_device >> 16) & 0xFFFF);
@@ -49,23 +49,35 @@ uint16_t pci_get_device(uint8_t bus, uint8_t slot) {
 }
 
 // Doesn't check for invalid vendor!
-uint8_t pci_get_class_code(uint8_t bus, uint8_t slot) {
-    return (uint8_t)((pci_config_read_word(bus, slot, 0, 10) >> 8) & 0xFF);
+uint8_t pci_get_class_code(uint8_t bus, uint8_t slot, uint8_t func) {
+    return (uint8_t)((pci_config_read_word(bus, slot, func, 10) >> 8) & 0xFF);
 }
 
 // Doesn't check for invalid vendor!
-uint8_t pci_get_subclass(uint8_t bus, uint8_t slot) {
-    return (uint8_t)(pci_config_read_word(bus, slot, 0, 10) & 0xFF);
+uint8_t pci_get_subclass(uint8_t bus, uint8_t slot, uint8_t func) {
+    return (uint8_t)(pci_config_read_word(bus, slot, func, 10) & 0xFF);
 }
 
 // Doesn't check for invalid vendor!
-uint8_t pci_get_progif(uint8_t bus, uint8_t slot) {
-    return (uint8_t)((pci_config_read_word(bus, slot, 0, 8) >> 8) & 0xFF);
+uint8_t pci_get_progif(uint8_t bus, uint8_t slot, uint8_t func) {
+    return (uint8_t)((pci_config_read_word(bus, slot, func, 8) >> 8) & 0xFF);
 }
 
 // Doesn't check for invalid vendor!
-uint8_t pci_get_revision(uint8_t bus, uint8_t slot) {
-    return (uint8_t)(pci_config_read_word(bus, slot, 0, 8) & 0xFF);
+uint8_t pci_get_revision(uint8_t bus, uint8_t slot, uint8_t func) {
+    return (uint8_t)(pci_config_read_word(bus, slot, func, 8) & 0xFF);
+}
+
+// Header type byte (offset 0x0E); bit 7 = multifunction device
+uint8_t pci_get_header_type(uint8_t bus, uint8_t slot, uint8_t func) {
+    return (uint8_t)((pci_config_read_word(bus, slot, func, 0x0E) & 0xFF));
+}
+
+/* 1 if the device at (bus, slot) has the multifunction bit set on
+ * function 0, so functions 1..7 are worth probing. */
+int pci_is_multifunction(uint8_t bus, uint8_t slot) {
+    if (pci_get_vendor(bus, slot, 0) == 0xFFFF) return 0;
+    return (pci_get_header_type(bus, slot, 0) & 0x80) != 0;
 }
 
 void pci_config_write_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value) {
@@ -99,15 +111,15 @@ uint8_t pci_find_cap(uint8_t bus, uint8_t slot, uint8_t func, uint8_t cap_id) {
     return 0;
 }
 
-pci_base_device_header_t pci_get_base_device_header(uint8_t bus, uint8_t slot) {
-    if (pci_get_vendor(bus, slot) == 0xFFFF)
+pci_base_device_header_t pci_get_base_device_header(uint8_t bus, uint8_t slot, uint8_t func) {
+    if (pci_get_vendor(bus, slot, func) == 0xFFFF)
         return (pci_base_device_header_t){.vendor = 0xFFFF};
 
     uint32_t result[4];
-    result[0] = pci_config_read_dword(bus, slot, 0, 0x0);
-    result[1] = pci_config_read_dword(bus, slot, 0, 0x4);
-    result[2] = pci_config_read_dword(bus, slot, 0, 0x8);
-    result[3] = pci_config_read_dword(bus, slot, 0, 0xC);
+    result[0] = pci_config_read_dword(bus, slot, func, 0x0);
+    result[1] = pci_config_read_dword(bus, slot, func, 0x4);
+    result[2] = pci_config_read_dword(bus, slot, func, 0x8);
+    result[3] = pci_config_read_dword(bus, slot, func, 0xC);
 
     return *(pci_base_device_header_t *)result;
 }

@@ -123,14 +123,14 @@ static int vblk_issue(uint32_t type, uint64_t lba, uint16_t count,
 }
 
 /* ── Init one VirtIO-blk device ─────────────────────────────────────────── */
-static int vblk_init_one(uint8_t bus, uint8_t slot) {
+static int vblk_init_one(uint8_t bus, uint8_t slot, uint8_t func) {
     /* Enable I/O space + bus master */
-    uint32_t cmd = pci_config_read_dword(bus, slot, 0, 0x04u);
+    uint32_t cmd = pci_config_read_dword(bus, slot, func, 0x04u);
     cmd |= 0x05u;   /* I/O Enable + Bus Master */
-    pci_config_write_dword(bus, slot, 0, 0x04u, cmd);
+    pci_config_write_dword(bus, slot, func, 0x04u, cmd);
 
     /* BAR0 = I/O space base */
-    uint32_t bar0 = pci_config_read_dword(bus, slot, 0, 0x10u);
+    uint32_t bar0 = pci_config_read_dword(bus, slot, func, 0x10u);
     if (!(bar0 & 1u)) return -1;   /* must be I/O space */
     vq_io_base = (uint16_t)(bar0 & 0xFFFCu);
 
@@ -177,14 +177,17 @@ static int vblk_init_one(uint8_t bus, uint8_t slot) {
 int vblk_init(void) {
     for (uint16_t bus = 0; bus < 256u; bus++) {
         for (uint8_t slot = 0; slot < 32u; slot++) {
-            if (pci_get_vendor(bus, slot) != 0x1AF4u) continue;
-            uint16_t dev = (uint16_t)(pci_config_read_dword(bus, slot, 0, 0x00u) >> 16);
-            if (dev != 0x1001u) continue;   /* legacy virtio-blk */
-            /* Subsystem device ID = 0x0002 confirms block device */
-            uint16_t subsys = (uint16_t)(pci_config_read_dword(bus, slot, 0, 0x2Cu) >> 16);
-            if (subsys != 0x0002u) continue;
-            if (vblk_ndrive >= MAX_VBLK) break;
-            vblk_init_one(bus, slot);
+            uint8_t nfunc = pci_is_multifunction((uint8_t)bus, slot) ? 8 : 1;
+            for (uint8_t func = 0; func < nfunc; func++) {
+                if (pci_get_vendor(bus, slot, func) != 0x1AF4u) continue;
+                uint16_t dev = (uint16_t)(pci_config_read_dword(bus, slot, func, 0x00u) >> 16);
+                if (dev != 0x1001u) continue;   /* legacy virtio-blk */
+                /* Subsystem device ID = 0x0002 confirms block device */
+                uint16_t subsys = (uint16_t)(pci_config_read_dword(bus, slot, func, 0x2Cu) >> 16);
+                if (subsys != 0x0002u) continue;
+                if (vblk_ndrive >= MAX_VBLK) break;
+                vblk_init_one(bus, slot, func);
+            }
         }
     }
     return (vblk_ndrive > 0) ? 0 : -1;
@@ -196,15 +199,14 @@ int vblk_read_sectors(uint8_t drv, uint64_t lba, uint8_t count, void *buf) {
     if ((uint32_t)count * 512u > sizeof(vblk_dma)) return -1;
     if (vblk_issue(VIRTIO_BLK_T_IN, lba, count, vblk_dma,
                    (uint32_t)count * 512u) != 0) return -1;
-    /* CoolFrost memcpy: src → dst */
-    memcpy(vblk_dma, (uint8_t *)buf, (size_t)count * 512u);
+    memcpy((uint8_t *)buf, vblk_dma, (size_t)count * 512u);
     return 0;
 }
 
 int vblk_write_sectors(uint8_t drv, uint64_t lba, uint8_t count, const void *buf) {
     if (drv >= (uint8_t)vblk_ndrive || !count) return count ? -1 : 0;
     if ((uint32_t)count * 512u > sizeof(vblk_dma)) return -1;
-    memcpy((uint8_t *)buf, vblk_dma, (size_t)count * 512u);
+    memcpy(vblk_dma, (uint8_t *)buf, (size_t)count * 512u);
     return vblk_issue(VIRTIO_BLK_T_OUT, lba, count, vblk_dma,
                       (uint32_t)count * 512u);
 }

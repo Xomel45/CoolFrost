@@ -32,4 +32,26 @@ SECTIONS
         *(COMMON)
         *(.bss)
     }
+
+    /* Ring3 arena: everything a user task can execute/touch. 2MB-aligned on
+     * both ends so paging_mark_user_region() can grant access by OR-ing the
+     * U bit into whole PDEs of the existing 2MB-huge-page identity map
+     * (cpu/paging.c) instead of splitting it into 4KB page tables. */
+    . = ALIGN(0x200000);
+    __user_start = .;
+
+    .user_text ALIGN(4K) : {
+        *(.user_text)
+    }
+
+    .user_data ALIGN(4K) : {
+        *(.user_data)
+    }
+
+    .user_bss ALIGN(4K) : {
+        *(.user_bss)
+    }
+
+    . = ALIGN(0x200000);
+    __user_end = .;
 }

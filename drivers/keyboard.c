@@ -2,16 +2,14 @@
 #include "../cpu/isr.h"
 #include <stdint.h>
 #include "screen.h"
+#include "keyboard.h"
+#include "../ui/event.h"
 
 static uint8_t cur_scancode = 0;
 static uint8_t shift_pressed = 0;
 static uint8_t e0_prefix = 0;
 
-/* Virtual scancodes for extended keys (above 0x58, below 0x80 — no conflict) */
-#define KEY_UP    0x60
-#define KEY_DOWN  0x61
-#define KEY_LEFT  0x62
-#define KEY_RIGHT 0x63
+/* Virtual scancodes are defined in keyboard.h and used here via the include */
 
 uint8_t get_cur_scancode() {
     uint8_t temp = cur_scancode;
@@ -169,6 +167,23 @@ void getline(char *to, char echo, uint32_t max_len) {
     start[len] = '\0';
 }
 
+/* IRQ-side shift state for event-queue char translation (independent from
+ * the polling-side shift_pressed consumed by keyboard_receive_key). */
+static uint8_t ev_shift = 0;
+
+/* Feed one decoded scancode into the DE/WM event queue. */
+static void kbd_push_event(uint8_t sc) {
+    if (sc & 0x80) {
+        uint8_t rel = sc & 0x7F;
+        if (rel == 0x2A || rel == 0x36) ev_shift = 0;
+        event_push_key(rel, 0, 0);
+        return;
+    }
+    if (sc == 0x2A || sc == 0x36) ev_shift = 1;
+    char ch = (sc < 128) ? (ev_shift ? keymap_shift[sc] : keymap[sc]) : 0;
+    event_push_key(sc, 1, ch);
+}
+
 void kb_callback(registers_t *regs) {
     (void)regs;
     uint8_t sc = port_byte_in(0x60);
@@ -183,13 +198,25 @@ void kb_callback(registers_t *regs) {
                 case 0x4B: cur_scancode = KEY_LEFT;  break;
                 case 0x4D: cur_scancode = KEY_RIGHT; break;
             }
+            if (cur_scancode >= KEY_UP && cur_scancode <= KEY_RIGHT)
+                event_push_key(cur_scancode, 1, 0);
         }
     } else {
         cur_scancode = sc;
+        kbd_push_event(sc);
     }
     port_byte_out(0x20, 0x20);  /* send EOI to master PIC */
 }
 
 void init_keyboard() {
     register_interrupt_handler(IRQ1, &kb_callback);
+}
+
+void kbd_inject_scancode(uint8_t sc) {
+    if (cur_scancode == 0)   /* don't overwrite a pending key */
+        cur_scancode = sc;
+    if (sc >= KEY_UP && sc <= KEY_RIGHT)
+        event_push_key(sc, 1, 0);
+    else
+        kbd_push_event(sc);
 }

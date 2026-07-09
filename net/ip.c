@@ -59,7 +59,7 @@ void ip_send(const ip_addr_t *dst, uint8_t proto,
     hdr->checksum    = ip_checksum(hdr, 20);
 
     /* Copy payload */
-    memcpy((uint8_t *)payload, ip_tx_buf + 20, plen);
+    memcpy(ip_tx_buf + 20, (uint8_t *)payload, plen);
 
     eth_send(&dst_mac, ETH_TYPE_IP, ip_tx_buf, (uint16_t)(20 + plen));
 }

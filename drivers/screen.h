@@ -93,6 +93,23 @@ int  get_offset(int col, int row);
  * goes to this function (e.g. serial_putc for QEMU -serial stdio output). */
 void screen_set_serial_hook(void (*fn)(char));
 
+/* ── Accessors for the gfx layer ───────────────────────────────────────────── */
+
+typedef struct {
+    uint8_t  *base;    /* linear framebuffer base (identity-mapped) */
+    uint32_t  width;   /* pixels  */
+    uint32_t  height;  /* pixels  */
+    uint32_t  pitch;   /* bytes per scanline */
+    uint8_t   bpp;     /* bits per pixel (32 expected) */
+} screen_fb_params_t;
+
+/* Fills `out` and returns 0 if a 32bpp linear framebuffer is active,
+ * -1 in VGA text fallback mode (gfx layer unavailable). */
+int screen_get_fb(screen_fb_params_t *out);
+
+/* 16-byte bitmap (8×16, MSB = left pixel) for a CP437 character. */
+const uint8_t *screen_glyph8x16(unsigned char ch);
+
 /* VGA text fallback registers (used when framebuffer unavailable) */
 #define REG_SCREEN_CTRL 0x3D4
 #define REG_SCREEN_DATA 0x3D5

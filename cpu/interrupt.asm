@@ -1,6 +1,10 @@
 ; Defined in isr.c
 [extern isr_handler]
 [extern irq_handler]
+; Defined in sched.c
+[extern sched_irq_end]
+; Defined in syscall.c
+[extern syscall_dispatch]
 
 [BITS 64]
 
@@ -41,6 +45,16 @@ isr_common_stub:
     mov rdi, rsp
     cld
     call isr_handler
+
+    ; Context switch hook, same as irq_common_stub below. Needed so that a
+    ; ring3 task isr_handler just killed (cpu/sched.c: sched_kill_current,
+    ; called when r->cs&3==3) is actually switched away from instead of
+    ; resuming a corrupted context via the iretq at the bottom of this stub.
+    ; For kernel-mode exceptions this is a no-op: want_schedule is unset, so
+    ; sched_irq_end hands back the same rsp unchanged.
+    mov rdi, rsp
+    call sched_irq_end
+    mov rsp, rax
 
     ; Restore GPRs
     pop r15
@@ -86,9 +100,76 @@ irq_common_stub:
     mov ds, ax
     mov es, ax
 
+    ; Normal IRQ handling (sends EOI, dispatches to C handlers)
     mov rdi, rsp
     cld
     call irq_handler
+
+    ; Context switch hook: pass current RSP, get back RSP to use.
+    ; If no switch: returns cur_rsp unchanged.
+    ; If switching:  returns new task's saved RSP.
+    mov rdi, rsp
+    call sched_irq_end
+    mov rsp, rax
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+
+    add rsp, 16
+    iretq
+
+; ────────────────────────────────────────────────────────────────────────────
+; int 0x80 syscall stub — DPL=3 IDT gate (cpu/syscall.c: syscall_install),
+; the only vector a ring3 task can reach via software `int n`. Same GPR
+; save/restore/switch-hook as irq_common_stub; syscall_dispatch writes its
+; return value directly into the saved rax slot (registers_t* aliases this
+; same stack frame), so it's already in place by the time we pop it back.
+; ────────────────────────────────────────────────────────────────────────────
+global syscall_stub
+syscall_stub:
+    push 0      ; err_code (unused — int 0x80 carries no CPU error code)
+    push 0x80   ; int_no
+
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+
+    mov rdi, rsp
+    cld
+    call syscall_dispatch
+
+    mov rdi, rsp
+    call sched_irq_end
+    mov rsp, rax
 
     pop r15
     pop r14

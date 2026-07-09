@@ -1,9 +1,12 @@
 #include "mem.h"
+#include "heap.h"
 
-/* NOTE: non-standard argument order: source first, dest second */
-void memcpy(uint8_t *source, uint8_t *dest, size_t nbytes) {
-    for (size_t i = 0; i < nbytes; i++)
-        dest[i] = source[i];
+void *memcpy(void *dest, const void *src, size_t n) {
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    for (size_t i = 0; i < n; i++)
+        d[i] = s[i];
+    return dest;
 }
 
 void memset(void *dest, uint8_t val, size_t len) {
@@ -32,18 +35,47 @@ void *memmove(void *dest, const void *src, size_t n) {
     return dest;
 }
 
-/* Bump allocator — pointer grows upward, no free.
- * 64-bit safe: uses uintptr_t throughout. */
-static uintptr_t free_mem_addr = 0x10000;
+/* Kernel heap: bitmap allocator (libc/heap.c) over a static BSS arena.
+ * Identity-mapped, so virtual == physical.
+ *
+ * Every allocation is prefixed with a header word holding the raw block
+ * pointer, so kfree() works for both plain and page-aligned allocations. */
+#define KHEAP_SIZE   (16u * 1024u * 1024u)  /* 16 MiB — fits a 32bpp backbuffer + DE allocations */
+#define KHEAP_BSIZE  64u                    /* bytes per bitmap slot */
+
+static uint8_t kheap_area[KHEAP_SIZE] __attribute__((aligned(4096)));
+static KHEAPBM kheap;
+static int     kheap_ready = 0;
+
+static void kheap_ensure_init(void) {
+    if (kheap_ready) return;
+    k_heapBMInit(&kheap);
+    k_heapBMAddBlock(&kheap, kheap_area, KHEAP_SIZE, KHEAP_BSIZE);
+    kheap_ready = 1;
+}
 
 uintptr_t kmalloc(size_t size, int align, uintptr_t *phys_addr) {
-    if (align && (free_mem_addr & 0xFFF)) {
-        /* Round up to next 4 KiB page boundary */
-        free_mem_addr &= ~(uintptr_t)0xFFF;
-        free_mem_addr += 0x1000;
+    kheap_ensure_init();
+
+    /* Room for the back-pointer header + worst-case alignment padding */
+    size_t extra = sizeof(uintptr_t) + (align ? 0x1000 : 0);
+    uint8_t *raw = (uint8_t *)k_heapBMAlloc(&kheap, size + extra);
+    if (!raw) {
+        if (phys_addr) *phys_addr = 0;
+        return 0;
     }
-    if (phys_addr) *phys_addr = free_mem_addr;
-    uintptr_t ret = free_mem_addr;
-    free_mem_addr += (uintptr_t)size;
-    return ret;
+
+    uintptr_t p = (uintptr_t)raw + sizeof(uintptr_t);
+    if (align)
+        p = (p + 0xFFF) & ~(uintptr_t)0xFFF;
+    ((uintptr_t *)p)[-1] = (uintptr_t)raw;
+
+    if (phys_addr) *phys_addr = p;   /* identity-mapped */
+    return p;
+}
+
+void kfree(void *ptr) {
+    if (!ptr || !kheap_ready) return;
+    uintptr_t raw = ((uintptr_t *)ptr)[-1];
+    k_heapBMFree(&kheap, (void *)raw);
 }

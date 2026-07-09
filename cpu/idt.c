@@ -3,14 +3,18 @@
 idt_gate_t    idt[IDT_ENTRIES];
 idt_register_t idt_reg;
 
-void set_idt_gate(int n, uint64_t handler) {
+void set_idt_gate_dpl(int n, uint64_t handler, uint8_t dpl) {
     idt[n].low_offset  = (uint16_t)(handler & 0xFFFF);
     idt[n].sel         = KERNEL_CS;
     idt[n].ist         = 0;
-    idt[n].flags       = 0x8E;  /* P=1, DPL=0, type=0xE (64-bit interrupt gate) */
+    idt[n].flags       = 0x8E | ((dpl & 0x3) << 5);  /* P=1, DPL=dpl, type=0xE */
     idt[n].mid_offset  = (uint16_t)((handler >> 16) & 0xFFFF);
     idt[n].high_offset = (uint32_t)((handler >> 32) & 0xFFFFFFFF);
     idt[n].zero        = 0;
+}
+
+void set_idt_gate(int n, uint64_t handler) {
+    set_idt_gate_dpl(n, handler, 0);
 }
 
 void set_idt(void) {

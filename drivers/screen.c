@@ -581,3 +581,19 @@ void kprint_backspace(void) {
     int col = (offset / 2) % cols;
     do_print_char(0x08, col, row, WHITE_ON_BLACK);
 }
+
+/* ── Accessors for the gfx layer ─────────────────────────────────────────── */
+
+int screen_get_fb(screen_fb_params_t *out) {
+    if (!use_fb || fb_bpp != 32 || !fb_base) return -1;
+    out->base   = fb_base;
+    out->width  = fb_width;
+    out->height = fb_height;
+    out->pitch  = fb_pitch;
+    out->bpp    = fb_bpp;
+    return 0;
+}
+
+const uint8_t *screen_glyph8x16(unsigned char ch) {
+    return font8x16[ch];
+}

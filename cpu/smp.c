@@ -72,8 +72,13 @@ void smp_init(void) {
         /* Send INIT IPI */
         lapic_send_init(apic_id);
 
-        /* Send SIPI */
+        /* Send SIPI twice (Intel MP spec: INIT, SIPI, SIPI).  Real hardware
+         * may ignore the first SIPI; a second one is required.  If the AP is
+         * already running, the extra SIPI is dropped by the APIC. */
         lapic_send_sipi(apic_id, AP_SIPI_VECTOR);
+        sleep_ms(1);
+        if (mb_read32(MB_AP_READY) != 1)
+            lapic_send_sipi(apic_id, AP_SIPI_VECTOR);
 
         /* Wait up to 50 ms for the AP to signal ready */
         int ok = 0;

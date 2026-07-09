@@ -24,14 +24,14 @@ void eth_send(const mac_addr_t *dst, uint16_t etype,
     if (plen > 1500u) return;
 
     /* Destination MAC */
-    memcpy((uint8_t *)dst->b,    eth_tx_frame,     6u);
+    memcpy(eth_tx_frame, (uint8_t *)dst->b,     6u);
     /* Source MAC */
-    memcpy((uint8_t *)net_mac.b, eth_tx_frame + 6, 6u);
+    memcpy(eth_tx_frame + 6, (uint8_t *)net_mac.b, 6u);
     /* Ethertype (big-endian) */
     eth_tx_frame[12] = (uint8_t)(etype >> 8);
     eth_tx_frame[13] = (uint8_t)(etype);
     /* Payload */
-    memcpy((uint8_t *)payload, eth_tx_frame + 14, plen);
+    memcpy(eth_tx_frame + 14, (uint8_t *)payload, plen);
 
     e1000_send(eth_tx_frame, (uint16_t)(14u + plen));
 }
@@ -43,12 +43,12 @@ void net_poll(void) {
 
     /* Check destination MAC (accept our MAC and broadcast) */
     mac_addr_t dst;
-    memcpy(eth_rx_frame, (uint8_t *)dst.b, 6u);
+    memcpy((uint8_t *)dst.b, eth_rx_frame, 6u);
     mac_addr_t bcast = {{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}};
     if (!mac_eq(&dst, &net_mac) && !mac_eq(&dst, &bcast)) return;
 
     mac_addr_t src;
-    memcpy(eth_rx_frame + 6, (uint8_t *)src.b, 6u);
+    memcpy((uint8_t *)src.b, eth_rx_frame + 6, 6u);
 
     uint16_t etype = (uint16_t)(((uint16_t)eth_rx_frame[12] << 8) | eth_rx_frame[13]);
     const uint8_t *payload = eth_rx_frame + 14;

@@ -260,8 +260,7 @@ int fat32_read(vfs_node_t *node, uint64_t offset, uint32_t size, void *buffer) {
             if (copy_len > size - bytes_read)
                 copy_len = size - bytes_read;
 
-            /* memcpy(source, dest, n) — CoolFrost non-standard order! */
-            memcpy(&sector_buf[copy_start], &out[bytes_read], (int)copy_len);
+            memcpy(&out[bytes_read], &sector_buf[copy_start], (int)copy_len);
             bytes_read += copy_len;
         }
 

@@ -26,13 +26,15 @@ void icmp_handle(const ip_addr_t *src_ip, const uint8_t *payload, int len) {
         /* Echo Request — send reply */
         if (len > 1480) return;
         static uint8_t reply[1480];
-        /* Copy incoming ICMP packet (CoolFrost memcpy: source, dest, n) */
-        memcpy((uint8_t *)payload, reply, (size_t)len);
+        /* Copy incoming ICMP packet */
+        memcpy(reply, (uint8_t *)payload, (size_t)len);
         reply[0] = 0;            /* type = Echo Reply */
         reply[2] = 0; reply[3] = 0; /* clear checksum field */
+        /* ip_checksum sums native-endian words, so the result is already
+         * in wire order when stored low byte first */
         uint16_t cs = ip_checksum(reply, len);
-        reply[2] = (uint8_t)(cs >> 8);
-        reply[3] = (uint8_t)(cs);
+        reply[2] = (uint8_t)(cs);
+        reply[3] = (uint8_t)(cs >> 8);
         ip_send(src_ip, IP_PROTO_ICMP, reply, (uint16_t)len);
     }
 }
@@ -55,9 +57,10 @@ int icmp_ping(const ip_addr_t *dst, uint32_t timeout_ms) {
     for (int i = 0; i < ICMP_DATA_LEN; i++)
         pkt[8 + i] = (uint8_t)('A' + i % 26);
 
+    /* Same wire-order note as in icmp_handle */
     uint16_t cs = ip_checksum(pkt, 8 + ICMP_DATA_LEN);
-    pkt[2] = (uint8_t)(cs >> 8);
-    pkt[3] = (uint8_t)(cs);
+    pkt[2] = (uint8_t)(cs);
+    pkt[3] = (uint8_t)(cs >> 8);
 
     ping_got     = 0;
     ping_waiting = 1;

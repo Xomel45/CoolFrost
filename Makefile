@@ -1,5 +1,5 @@
-C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c fs/*.c net/*.c)
-HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h fs/*.h net/*.h)
+C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c libc/*.c power/*.c fs/*.c net/*.c gfx/*.c ui/*.c user/*.c)
+HEADERS   = $(wildcard kernel/*.h drivers/*.h cpu/*.h libc/*.h power/*.h fs/*.h net/*.h gfx/*.h ui/*.h user/*.h)
 OBJ       = ${C_SOURCES:.c=.o} cpu/interrupt.o drivers/cpuid-detect.o \
             boot/ap_trampoline_embed.o
 
@@ -108,5 +108,5 @@ check: ${C_SOURCES}
 
 clean:
 	rm -rf *.iso *.dis *.o *.elf hdd.img
-	rm -rf kernel/*.o boot/*.o boot/*.bin drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o net/*.o
+	rm -rf kernel/*.o boot/*.o boot/*.bin drivers/*.o cpu/*.o libc/*.o power/*.o vm/*.o net/*.o user/*.o
 	rm -rf iso/

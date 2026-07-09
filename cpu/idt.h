@@ -31,6 +31,13 @@ extern idt_gate_t    idt[IDT_ENTRIES];
 extern idt_register_t idt_reg;
 
 void set_idt_gate(int n, uint64_t handler);
+
+/* Same as set_idt_gate, but with an explicit gate DPL (0-3). Exceptions/IRQs
+ * are delivered by the CPU regardless of gate DPL — this only matters for a
+ * vector a ring3 task reaches via a software `int n`, e.g. the syscall gate
+ * (cpu/syscall.c) at DPL=3. */
+void set_idt_gate_dpl(int n, uint64_t handler, uint8_t dpl);
+
 void set_idt(void);
 
 #endif
