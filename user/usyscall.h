@@ -23,4 +23,11 @@ static inline uint64_t usyscall1(uint64_t num, uint64_t a1) {
     return ret;
 }
 
+__attribute__((always_inline, section(".user_text")))
+static inline uint64_t usyscall2(uint64_t num, uint64_t a1, uint64_t a2) {
+    uint64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(num), "D"(a1), "S"(a2) : "memory");
+    return ret;
+}
+
 #endif

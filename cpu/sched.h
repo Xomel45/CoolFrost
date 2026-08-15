@@ -2,6 +2,8 @@
 #define SCHED_H
 
 #include <stdint.h>
+#include "../fs/vfs.h"
+#include "vmm.h"
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 #define MAX_TASKS      32
@@ -53,6 +55,32 @@ typedef struct {
                                   * tests); nonzero = this task's private PML4 physical
                                   * address (cpu/vmm.h), loaded by sched_irq_end() before it
                                   * runs — see sched_submit_user_as(). */
+    file_descriptor_t fd_table[MAX_FD]; /* this task's own open-file handles (fs/vfs.c) —
+                                  * per-task, not shared: two tasks can both hand out fd 0
+                                  * for completely different files. Reset (all .active=0)
+                                  * whenever a task_pool slot is reused, see find_free_slot()
+                                  * callers in sched_submit_prio/_user/_user_as. The idle
+                                  * task's table (the shell/kernel-context "process") is
+                                  * BSS-zeroed at boot and never explicitly reset since its
+                                  * slot is never reused. */
+    vmm_as_t     *as;            /* this task's private address space bookkeeping (cpu/vmm.h),
+                                  * NULL for kernel/shared-AS tasks. SYS_SBRK (cpu/syscall.c)
+                                  * needs the vmm_as_t* itself (not just .cr3, the PML4
+                                  * physical address) to call vmm_alloc_page/vmm_map_page for
+                                  * this task's own heap growth — kernel/elf.c: elf_exec sets
+                                  * this right after vmm_create_address_space, in addition to
+                                  * handing the same pointer back to its caller via *out_as
+                                  * for eventual vmm_destroy_address_space (kernel/kernel.c's
+                                  * `exec` command) — two independent references to one
+                                  * allocation, not double ownership; only kernel.c frees it. */
+    uint64_t      heap_start;    /* page-aligned VA right after the last loaded PT_LOAD
+                                  * segment (kernel/elf.c) — SYS_SBRK's heap grows from here.
+                                  * 0 = no heap (not an exec'd process). */
+    uint64_t      heap_brk;      /* current break; [heap_start, round-up(heap_brk)) is backed
+                                  * by real mapped pages. Starts equal to heap_start. */
+    uint64_t      heap_end;      /* hard ceiling SYS_SBRK refuses to grow past (kernel/elf.c:
+                                  * argv_va) — keeps the heap from ever reaching the argv
+                                  * page/stack near the top of the process's 1GB window. */
 } task_t;
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -119,6 +147,20 @@ void    sched_run_loop(int cpu_id);
 /* Shell ps command accessors */
 int     sched_task_count(void);
 task_t *sched_get_task(int idx);
+
+/* The task whose context is presently executing — valid any time after
+ * sched_init() (not just after sched_run()/scheduler_active, so early-boot
+ * code like the auto-mount directory listing in kernel_main can still open
+ * files: it runs as the idle task before sched_run() ever gets called).
+ * Used by fs/vfs.c to find the caller's own fd_table without every vfs_*
+ * call needing an explicit task_t* parameter. */
+task_t *sched_current_task(void);
+
+/* The idle task specifically (shell/kernel-context "process") — distinct
+ * from sched_current_task() when a real task is running. fs/vfs.c needs
+ * this to close idle-task fds on vfs_umount(), since the idle task isn't
+ * reachable through sched_get_task()'s task_pool range. */
+task_t *sched_idle_task(void);
 
 /* Human-readable state string */
 const char *sched_state_name(task_state_t s);

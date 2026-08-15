@@ -218,3 +218,16 @@ void ugfx_present(void) {
     if (!ugfx_ready) return;
     usyscall1(SYS_GFX_PRESENT, (uint64_t)(uintptr_t)backbuf_px);
 }
+
+SECTEXT
+void ugfx_present_rect(int32_t x, int32_t y, int32_t w, int32_t h) {
+    if (!ugfx_ready) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (w <= 0 || h <= 0) return;
+    if (x > 0xFFFF || y > 0xFFFF || w > 0xFFFF || h > 0xFFFF) { ugfx_present(); return; }
+
+    uint64_t packed = ((uint64_t)(uint16_t)x << 48) | ((uint64_t)(uint16_t)y << 32) |
+                      ((uint64_t)(uint16_t)w << 16) | (uint64_t)(uint16_t)h;
+    usyscall2(SYS_GFX_PRESENT_RECT, (uint64_t)(uintptr_t)backbuf_px, packed);
+}

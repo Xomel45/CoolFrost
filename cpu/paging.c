@@ -52,10 +52,27 @@ static int in_range(uintptr_t p, size_t len, uintptr_t start, uintptr_t end) {
 int is_user_range(const void *ptr, size_t len) {
     uintptr_t p = (uintptr_t)ptr;
 
+    /* Shared arena: statically part of kernel.elf's own sections, backed by
+     * real pages in every address space unconditionally — no hole is
+     * possible, so the bounds check alone is enough. */
     if (in_range(p, len, (uintptr_t)__user_start, (uintptr_t)__user_end))
         return 1;
-    if (in_range(p, len, (uintptr_t)VMM_USER_BASE, (uintptr_t)(VMM_USER_BASE + VMM_USER_SIZE)))
-        return 1;
+
+    /* Private per-process window: only the loaded ELF segments + stack +
+     * argv page (kernel/elf.c) are actually backed. Passing the bounds
+     * check here is NOT enough — most of this 1GB window is unmapped, and
+     * dereferencing an unmapped-but-in-window pointer would #PF in ring0
+     * (see cpu/vmm.h: vmm_range_mapped's doc comment for why that's fatal
+     * to the whole kernel, not just the calling task). CR3 is read
+     * directly rather than going through cpu/sched.h's task_t.cr3 — a trap
+     * never changes CR3, so whatever's loaded right now is definitely the
+     * calling task's own address space, and this avoids a dependency on
+     * the scheduler just to validate a pointer. */
+    if (in_range(p, len, (uintptr_t)VMM_USER_BASE, (uintptr_t)(VMM_USER_BASE + VMM_USER_SIZE))) {
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        return vmm_range_mapped(cr3, p, len);
+    }
 
     return 0;
 }

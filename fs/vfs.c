@@ -3,17 +3,29 @@
 #include "fat32.h"
 #include "ext2.h"
 #include "ntfs.h"
+#include "xfs.h"
 #include "../drivers/ata.h"
 #include "../drivers/nvme.h"
 #include "../drivers/ahci.h"
 #include "../libc/mem.h"
+#include "../cpu/sched.h"
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  Global tables
  * ══════════════════════════════════════════════════════════════════════════ */
 
 static mount_point_t     mount_table[MAX_MOUNTS];
-static file_descriptor_t fd_table[MAX_FD];
+
+/* fd_table is per-task (task_t.fd_table, cpu/sched.h), not global — this
+ * helper just resolves "the caller's table" so vfs_open/close/read/write/
+ * seek keep their old signatures (no task_t* parameter to plumb through
+ * every call site in kernel.c/elf.c/syscall.c). Safe any time after
+ * sched_init(): cur_task is &idle_task from boot, before sched_run() is
+ * even called, and idle_task IS the context the early auto-mount directory
+ * listing and every shell command run in. */
+static inline file_descriptor_t *fdt(void) {
+    return sched_current_task()->fd_table;
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
  *  Init
@@ -21,7 +33,9 @@ static file_descriptor_t fd_table[MAX_FD];
 
 void vfs_init(void) {
     memset(mount_table, 0, sizeof(mount_table));
-    memset(fd_table,    0, sizeof(fd_table));
+    /* fd tables live in task_t now — each one is reset when its task_pool
+     * slot is (re)used, see cpu/sched.c: sched_submit_prio/_user/_user_as.
+     * idle_task's is BSS-zeroed at boot. Nothing to do here. */
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -114,6 +128,57 @@ static mount_point_t *first_mount(void) {
     return 0;
 }
 
+/* Resolve an absolute or relative path straight to its vfs_node_t — the
+ * "find the mount, walk the rest" pairing vfs_open does inline (it also
+ * needs the mount_point_t/remainder themselves for its O_CREATE fallback,
+ * so it isn't rewritten to call this), used by anything that just wants
+ * the node and nothing else. Returns NULL if no mount matches or any path
+ * component isn't found. */
+static vfs_node_t *resolve_path(const char *path) {
+    mount_point_t *mp;
+    const char *relpath;
+
+    if (path[0] == '/') {
+        mp = find_mount(path, &relpath);
+        if (!mp) return 0;
+    } else {
+        mp = first_mount();
+        if (!mp) return 0;
+        relpath = path;
+    }
+
+    return walk_path(mp->root, relpath);
+}
+
+/* Splits `relpath` (already relative to `mp`'s root) into "the directory
+ * node containing its final component" and "that component's name" (copied
+ * into `name_out`, a caller-owned buffer at least MAX_FILENAME long) — same
+ * manual component-splitting style walk_path already uses, no generic
+ * strtok in this codebase (see project memory on the `exec` argv
+ * tokenizer). Shared by vfs_open's O_CREATE fallback and vfs_unlink —
+ * anything that needs "the parent of X" rather than X itself. Returns NULL
+ * if the parent directory itself doesn't exist. */
+static vfs_node_t *split_parent(mount_point_t *mp, const char *relpath,
+                                char *name_out, int name_out_max) {
+    const char *last_slash = 0;
+    for (const char *p = relpath; *p; p++)
+        if (*p == '/') last_slash = p;
+
+    if (!last_slash) {
+        vfs_strcpy(name_out, relpath, name_out_max);
+        return mp->root;
+    }
+
+    char dirpath[MAX_PATH];
+    int dlen = (int)(last_slash - relpath);
+    if (dlen >= MAX_PATH) return 0;
+    for (int i = 0; i < dlen; i++) dirpath[i] = relpath[i];
+    dirpath[dlen] = '\0';
+
+    vfs_strcpy(name_out, last_slash + 1, name_out_max);
+    return walk_path(mp->root, dirpath);
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
  *  vfs_mount — mount a partition at a given path
  *
@@ -152,9 +217,19 @@ int vfs_mount(uint8_t drive, uint8_t partition, const char *mount_path) {
     }
 
     if (ptype == 0x83) {
-        /* Linux — try ext2/3/4 */
-        return ext2_mount(DRIVE_TYPE_ATA, drive, parts[partition].lba_start,
-                          &mount_table[slot]);
+        /* "Linux filesystem" — real Linux doesn't reserve a separate MBR
+         * type byte for xfs vs ext2/3/4 either, it probes the superblock
+         * at mount time. Same here: try ext2 first, and only on a
+         * genuine bad-magic mismatch (-2, not any other failure) try xfs
+         * — an xfs volume's ext2-magic check at byte 1080 will reliably
+         * miss (xfs's own magic lives at byte 0), so this never
+         * mistakes one for the other. */
+        int rc = ext2_mount(DRIVE_TYPE_ATA, drive, parts[partition].lba_start,
+                            &mount_table[slot]);
+        if (rc == -2)
+            return xfs_mount(DRIVE_TYPE_ATA, drive, parts[partition].lba_start,
+                             &mount_table[slot]);
+        return rc;
     }
 
     if (ptype == 0x07) {
@@ -352,6 +427,18 @@ int vfs_mount_vblk_gpt(uint8_t vblk_idx, uint64_t lba_start, uint64_t sector_cou
 
 /* ══════════════════════════════════════════════════════════════════════════ */
 
+/* Closes every fd in `table` that references a node under `root` — walks
+ * each open node's parent chain up to the mount root. Called once per task
+ * (every task has its own table now), not once globally. */
+static void close_fds_under(file_descriptor_t *table, vfs_node_t *root) {
+    for (int f = 0; f < MAX_FD; f++) {
+        if (!table[f].active) continue;
+        vfs_node_t *n = table[f].node;
+        while (n && n != root) n = n->parent;
+        if (n == root) table[f].active = 0;
+    }
+}
+
 int vfs_umount(const char *mount_path) {
     for (int i = 0; i < MAX_MOUNTS; i++) {
         if (!mount_table[i].active) continue;
@@ -362,19 +449,38 @@ int vfs_umount(const char *mount_path) {
         }
         if (!match) continue;
 
-        /* Close all fds that reference this mount's nodes */
-        for (int f = 0; f < MAX_FD; f++) {
-            if (!fd_table[f].active) continue;
-            /* Walk up parent chain to see if it belongs to this mount */
-            vfs_node_t *n = fd_table[f].node;
-            while (n && n != mount_table[i].root) n = n->parent;
-            if (n == mount_table[i].root)
-                fd_table[f].active = 0;
-        }
+        /* Close all fds that reference this mount's nodes, across every
+         * task's own table — not just the caller's (sched_current_task()
+         * is whichever task is running the `umount` shell command, which
+         * says nothing about who else has files open on this mount). */
+        close_fds_under(sched_idle_task()->fd_table, mount_table[i].root);
+        for (int t = 0; t < sched_task_count(); t++)
+            close_fds_under(sched_get_task(t)->fd_table, mount_table[i].root);
 
         mount_table[i].active = 0;
         mount_table[i].root   = 0;
         return 0;
+    }
+    return -1;  /* mount path not found */
+}
+
+int vfs_defrag(const char *mount_path, uint32_t *out_scanned,
+              uint32_t *out_moved, uint32_t *out_skipped) {
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        if (!mount_table[i].active) continue;
+
+        int match = 1;
+        for (int k = 0; mount_path[k] || mount_table[i].path[k]; k++) {
+            if (mount_path[k] != mount_table[i].path[k]) { match = 0; break; }
+        }
+        if (!match) continue;
+
+        if (mount_table[i].fs_type == FS_FAT32)
+            return fat32_defrag(mount_table[i].root, out_scanned, out_moved, out_skipped);
+        if (mount_table[i].fs_type == FS_EXT2)
+            return ext2_defrag(mount_table[i].root, out_scanned, out_moved, out_skipped);
+
+        return -2;   /* not supported for this filesystem type yet */
     }
     return -1;  /* mount path not found */
 }
@@ -387,26 +493,37 @@ int vfs_umount(const char *mount_path) {
  * ══════════════════════════════════════════════════════════════════════════ */
 
 int vfs_open(const char *path, uint8_t flags) {
-    vfs_node_t *node = 0;
+    mount_point_t *mp = 0;
+    const char *relpath = 0;
 
     if (path[0] == '/') {
-        const char *remainder = 0;
-        mount_point_t *mp = find_mount(path, &remainder);
+        mp = find_mount(path, &relpath);
         if (!mp) return -1;
-        node = walk_path(mp->root, remainder);
     } else {
-        mount_point_t *mp = first_mount();
+        mp = first_mount();
         if (!mp) return -1;
-        node = walk_path(mp->root, path);
+        relpath = path;
     }
 
-    if (!node) return -2;   /* file not found */
+    vfs_node_t *node = walk_path(mp->root, relpath);
 
-    /* Find free fd slot */
+    if (!node) {
+        if (!(flags & O_CREATE)) return -2;   /* file not found */
+
+        char name[MAX_FILENAME];
+        vfs_node_t *parent = split_parent(mp, relpath, name, MAX_FILENAME);
+
+        if (!parent || !parent->create || !*name) return -2;
+        node = parent->create(parent, name);
+        if (!node) return -2;   /* driver couldn't create it (full, bad name, ...) */
+    }
+
+    /* Find free fd slot (in the calling task's own table) */
+    file_descriptor_t *fd_table = fdt();
     for (int i = 0; i < MAX_FD; i++) {
         if (!fd_table[i].active) {
             fd_table[i].node   = node;
-            fd_table[i].offset = 0;
+            fd_table[i].offset = (flags & O_APPEND) ? node->size : 0;
             fd_table[i].flags  = flags;
             fd_table[i].active = 1;
             return i;
@@ -419,6 +536,7 @@ int vfs_open(const char *path, uint8_t flags) {
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 int vfs_close(int fd) {
+    file_descriptor_t *fd_table = fdt();
     if (fd < 0 || fd >= MAX_FD)  return -1;
     if (!fd_table[fd].active)    return -1;
     fd_table[fd].active = 0;
@@ -431,6 +549,7 @@ int vfs_close(int fd) {
  * ══════════════════════════════════════════════════════════════════════════ */
 
 int vfs_read(int fd, void *buffer, size_t size) {
+    file_descriptor_t *fd_table = fdt();
     if (fd < 0 || fd >= MAX_FD)  return -1;
     if (!fd_table[fd].active)    return -1;
 
@@ -444,6 +563,7 @@ int vfs_read(int fd, void *buffer, size_t size) {
 }
 
 int vfs_seek(int fd, uint64_t offset) {
+    file_descriptor_t *fd_table = fdt();
     if (fd < 0 || fd >= MAX_FD)  return -1;
     if (!fd_table[fd].active)    return -1;
 
@@ -454,6 +574,7 @@ int vfs_seek(int fd, uint64_t offset) {
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 int vfs_write(int fd, const void *buffer, size_t size) {
+    file_descriptor_t *fd_table = fdt();
     if (fd < 0 || fd >= MAX_FD)  return -1;
     if (!fd_table[fd].active)    return -1;
 
@@ -471,6 +592,7 @@ int vfs_write(int fd, const void *buffer, size_t size) {
  * ══════════════════════════════════════════════════════════════════════════ */
 
 dirent_t *vfs_readdir(int fd, uint32_t index) {
+    file_descriptor_t *fd_table = fdt();
     if (fd < 0 || fd >= MAX_FD)  return 0;
     if (!fd_table[fd].active)    return 0;
 
@@ -478,6 +600,104 @@ dirent_t *vfs_readdir(int fd, uint32_t index) {
     if (!node || !node->readdir) return 0;
 
     return node->readdir(node, index);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  vfs_stat / vfs_fstat — file metadata without opening for I/O
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+int vfs_stat(const char *path, vfs_stat_t *out) {
+    vfs_node_t *node = resolve_path(path);
+    if (!node) return -1;
+
+    out->size  = node->size;
+    out->inode = node->inode;
+    out->type  = node->type;
+    return 0;
+}
+
+int vfs_fstat(int fd, vfs_stat_t *out) {
+    file_descriptor_t *fd_table = fdt();
+    if (fd < 0 || fd >= MAX_FD)  return -1;
+    if (!fd_table[fd].active)    return -1;
+
+    vfs_node_t *node = fd_table[fd].node;
+    if (!node) return -1;
+
+    out->size  = node->size;
+    out->inode = node->inode;
+    out->type  = node->type;
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  vfs_unlink — remove a file
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+int vfs_unlink(const char *path) {
+    mount_point_t *mp = 0;
+    const char *relpath = 0;
+
+    if (path[0] == '/') {
+        mp = find_mount(path, &relpath);
+        if (!mp) return -1;
+    } else {
+        mp = first_mount();
+        if (!mp) return -1;
+        relpath = path;
+    }
+
+    char name[MAX_FILENAME];
+    vfs_node_t *parent = split_parent(mp, relpath, name, MAX_FILENAME);
+    if (!parent || !parent->unlink || !*name) return -2;
+
+    return parent->unlink(parent, name);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  vfs_rename — move/rename a file, same filesystem only
+ *
+ *  Cross-filesystem renames (old_path and new_path resolving to different
+ *  mount_point_t's) are refused outright — moving data between two
+ *  filesystem drivers would need an actual byte copy (open old for
+ *  reading, create new, copy, unlink old — exactly what a userland
+ *  ucopy()+SYS_UNLINK does, see userland/ufileutil.h), not the cheap
+ *  detach-and-reattach-the-same-inode move a same-filesystem rename is.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+int vfs_rename(const char *old_path, const char *new_path) {
+    mount_point_t *old_mp = 0;
+    const char *old_rel = 0;
+    if (old_path[0] == '/') {
+        old_mp = find_mount(old_path, &old_rel);
+        if (!old_mp) return -1;
+    } else {
+        old_mp = first_mount();
+        if (!old_mp) return -1;
+        old_rel = old_path;
+    }
+
+    mount_point_t *new_mp = 0;
+    const char *new_rel = 0;
+    if (new_path[0] == '/') {
+        new_mp = find_mount(new_path, &new_rel);
+        if (!new_mp) return -1;
+    } else {
+        new_mp = first_mount();
+        if (!new_mp) return -1;
+        new_rel = new_path;
+    }
+
+    if (old_mp != new_mp) return -1;   /* different filesystem — refuse, see doc comment above */
+
+    char old_name[MAX_FILENAME];
+    char new_name[MAX_FILENAME];
+    vfs_node_t *old_dir = split_parent(old_mp, old_rel, old_name, MAX_FILENAME);
+    vfs_node_t *new_dir = split_parent(new_mp, new_rel, new_name, MAX_FILENAME);
+
+    if (!old_dir || !new_dir || !old_dir->rename || !*old_name || !*new_name) return -2;
+
+    return old_dir->rename(old_dir, old_name, new_dir, new_name);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */

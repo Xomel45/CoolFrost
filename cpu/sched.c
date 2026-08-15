@@ -190,14 +190,20 @@ void sched_init(void) {
     idle_task.name[0]   = 'i'; idle_task.name[1] = 'd';
     idle_task.name[2]   = 'l'; idle_task.name[3] = 'e';
     idle_task.name[4]   = '\0';
+
+    /* Valid before sched_run()/scheduler_active too — early-boot code (the
+     * auto-mount directory listing in kernel_main) calls vfs_open() before
+     * the shell loop and preemption even start, and fs/vfs.c now resolves
+     * the caller's fd_table through sched_current_task(). idle_task.fd_table
+     * is already all-zero (BSS), so this is safe with no further init. */
+    cur_task = &idle_task;
 }
 
 /* ── sched_run ──────────────────────────────────────────────────────────── *
  * Enable preemptive scheduling. The calling thread becomes the idle task.  *
  * Returns immediately; caller continues running as the idle context.       */
 void sched_run(void) {
-    cur_task         = &idle_task;
-    scheduler_active = 1;
+    scheduler_active = 1;   /* cur_task is already &idle_task, set in sched_init() */
 }
 
 /* Finds a reusable task_pool slot (FREE or DONE), growing task_count if the
@@ -249,6 +255,11 @@ int sched_submit_prio(const char *name, void (*func)(void *), void *arg,
     t->is_user  = 0;
     t->user_stack = (uint8_t *)0;
     t->cr3      = 0;   /* reset in case this slot's previous occupant was a private-AS task */
+    memset(t->fd_table, 0, sizeof(t->fd_table));   /* don't inherit a stale occupant's fds */
+    t->as         = (vmm_as_t *)0;   /* no private address space: no heap either */
+    t->heap_start = 0;
+    t->heap_brk   = 0;
+    t->heap_end   = 0;
     t->quantum  = prio_quantum[priority];
     t->timeslice= t->quantum;
     t->func     = func;
@@ -301,6 +312,11 @@ int sched_submit_user(const char *name, void (*entry)(void *), void *arg) {
     t->user_stack = user_stack_pool[user_stack_next++];
     t->is_user    = 1;
     t->cr3        = 0;   /* shared/master address space */
+    memset(t->fd_table, 0, sizeof(t->fd_table));   /* don't inherit a stale occupant's fds */
+    t->as         = (vmm_as_t *)0;   /* shared address space: no private heap */
+    t->heap_start = 0;
+    t->heap_brk   = 0;
+    t->heap_end   = 0;
     t->quantum    = prio_quantum[PRIO_NORMAL];
     t->timeslice  = t->quantum;
     t->func       = entry;
@@ -345,6 +361,14 @@ int sched_submit_user_as(const char *name, void (*entry)(void *), void *arg,
     t->user_stack = (uint8_t *)0;   /* not from the shared pool — private AS instead */
     t->is_user    = 1;
     t->cr3        = cr3;
+    memset(t->fd_table, 0, sizeof(t->fd_table));   /* don't inherit a stale occupant's fds */
+    t->as         = (vmm_as_t *)0;   /* kernel/elf.c: elf_exec fills this + heap_* in right
+                                      * after this call returns — zeroed here first so a
+                                      * failure between the two never leaves a stale
+                                      * occupant's heap range live on this slot. */
+    t->heap_start = 0;
+    t->heap_brk   = 0;
+    t->heap_end   = 0;
     t->quantum    = prio_quantum[PRIO_NORMAL];
     t->timeslice  = t->quantum;
     t->func       = entry;
@@ -477,6 +501,9 @@ task_t *sched_get_task(int idx) {
     if (idx < 0 || idx >= task_count) return (task_t *)0;
     return &task_pool[idx];
 }
+
+task_t *sched_current_task(void) { return cur_task; }
+task_t *sched_idle_task(void)    { return &idle_task; }
 
 const char *sched_state_name(task_state_t s) {
     switch (s) {

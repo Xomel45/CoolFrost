@@ -1,6 +1,8 @@
 #include "elf.h"
 #include "../fs/vfs.h"
 #include "../cpu/sched.h"
+#include "../libc/mem.h"
+#include "../libc/string.h"
 
 #define ELFCLASS64  2
 #define ELFDATA2LSB 1
@@ -81,7 +83,18 @@ static int load_segment(int fd, vmm_as_t *as, uint64_t seg_start, uint64_t seg_e
     return 0;
 }
 
-int elf_exec(const char *path, const char *name, vmm_as_t **out_as) {
+/* Process-side view of the argv page elf_exec() builds — argc plus pointers
+ * into the strings packed right after this header, all addresses already
+ * translated to the process's own VA (argv_va below), so the process can
+ * dereference them directly. Must match userland/usyscall.h's proc_args_t
+ * byte-for-byte (see kernel/elf.h's elf_exec doc comment). */
+typedef struct {
+    uint64_t argc;
+    char    *argv[ELF_MAX_ARGS];
+} proc_args_t;
+
+int elf_exec(const char *path, const char *name, int argc, char *const argv[],
+            vmm_as_t **out_as) {
     int fd = vfs_open(path, O_RDONLY);
     if (fd < 0) return -1;
 
@@ -101,6 +114,13 @@ int elf_exec(const char *path, const char *name, vmm_as_t **out_as) {
 
     vmm_as_t *as = vmm_create_address_space();
     if (!as) { vfs_close(fd); return -1; }
+
+    /* Highest byte any PT_LOAD segment reaches, page-aligned up — where
+     * SYS_SBRK's heap (cpu/syscall.c) starts growing from, set on the task
+     * once it exists (sched_submit_user_as, below). Starts at
+     * VMM_USER_BASE so a (pathological) ELF with no PT_LOAD segments still
+     * gets a well-defined, if useless, heap_start rather than garbage. */
+    uint64_t max_seg_end = VMM_USER_BASE;
 
     for (uint16_t i = 0; i < ehdr.e_phnum; i++) {
         elf64_phdr_t *ph = &phdrs[i];
@@ -122,6 +142,8 @@ int elf_exec(const char *path, const char *name, vmm_as_t **out_as) {
             vfs_close(fd);
             return -1;
         }
+
+        if (seg_end > max_seg_end) max_seg_end = seg_end;
     }
 
     if (ehdr.e_entry < VMM_USER_BASE || ehdr.e_entry >= VMM_USER_BASE + VMM_USER_SIZE) {
@@ -146,12 +168,57 @@ int elf_exec(const char *path, const char *name, vmm_as_t **out_as) {
 
     vfs_close(fd);   /* file content is fully loaded into memory now */
 
+    /* Argv page: one more page directly below the stack, holding the
+     * proc_args_t header (argc + ELF_MAX_ARGS char* slots) followed by the
+     * NUL-terminated argument strings themselves, all packed into a single
+     * 4KB page. Built through vmm_alloc_page's identity-mapped kernel-VA
+     * alias (argv_pa doubles as a plain kernel pointer we can memcpy into),
+     * but every pointer actually stored in the header is the process-side
+     * VA (argv_va + offset) — the process can only ever see its own
+     * mapping, never the kernel alias. */
+    uint64_t argv_va = stack_top - (uint64_t)(ELF_STACK_PAGES + 1) * ELF_PAGE_SIZE;
+    uint64_t argv_pa = vmm_alloc_page(as);
+    if (!argv_pa || vmm_map_page(as, argv_va, argv_pa, VMM_PAGE_RW_U) != 0) {
+        vmm_destroy_address_space(as);
+        return -1;
+    }
+
+    if (argc < 0) argc = 0;
+    if (argc > ELF_MAX_ARGS) argc = ELF_MAX_ARGS;
+
+    proc_args_t *hdr    = (proc_args_t *)(uintptr_t)argv_pa;
+    char        *str_kva = (char *)(uintptr_t)argv_pa + sizeof(proc_args_t);
+    uint64_t     str_room = ELF_PAGE_SIZE - sizeof(proc_args_t);
+    uint64_t     str_off  = 0;
+
+    int copied = 0;
+    for (int i = 0; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        if (str_off + len + 1 > str_room) break;   /* out of room in this page — stop here */
+        memcpy(str_kva + str_off, argv[i], len + 1);
+        hdr->argv[copied++] = (char *)(uintptr_t)(argv_va + sizeof(proc_args_t) + str_off);
+        str_off += (uint64_t)len + 1;
+    }
+    hdr->argc = (uint64_t)copied;
+    for (int i = copied; i < ELF_MAX_ARGS; i++) hdr->argv[i] = (char *)0;
+
     int slot = sched_submit_user_as(name, (void (*)(void *))(uintptr_t)ehdr.e_entry,
-                                    (void *)0, as->pml4_phys, stack_top);
+                                    (void *)(uintptr_t)argv_va, as->pml4_phys, stack_top);
     if (slot < 0) {
         vmm_destroy_address_space(as);
         return -1;
     }
+
+    /* Heap: [max_seg_end, argv_va) is unmapped and free for SYS_SBRK to
+     * grow into (cpu/syscall.c) — argv_va is the ceiling since the argv
+     * page and stack sit at fixed addresses just above it, near the top of
+     * the window. as itself is stashed on the task too: SYS_SBRK needs the
+     * vmm_as_t* (not just .cr3) to call vmm_alloc_page/vmm_map_page. */
+    task_t *t     = sched_get_task(slot);
+    t->as         = as;
+    t->heap_start = max_seg_end;
+    t->heap_brk   = max_seg_end;
+    t->heap_end   = argv_va;
 
     *out_as = as;
     return slot;

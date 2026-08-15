@@ -653,6 +653,22 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
                 else
                     kprint_attr("Not mounted or umount failed\n", RED_FG);
             }
+        } else if (starts_with(cmd_buf, "defrag ")) {
+            const char *path = cmd_buf + 7;
+            while (*path == ' ') path++;
+            if (!*path) {
+                kprint_attr("Usage: defrag <mount path>\n", RED_FG);
+            } else {
+                uint32_t scanned = 0, moved = 0, skipped = 0;
+                int rc = vfs_defrag(path, &scanned, &moved, &skipped);
+                if (rc == 0)
+                    printf("Defrag %s: %lu scanned, %lu moved, %lu left fragmented\n",
+                           path, (unsigned long)scanned, (unsigned long)moved, (unsigned long)skipped);
+                else if (rc == -2)
+                    kprint_attr("Defrag not supported on this filesystem type yet\n", RED_FG);
+                else
+                    kprint_attr("Not mounted\n", RED_FG);
+            }
         } else if (strcmp(cmd_buf, "poweroff") == 0) {
             clear_screen();
             kprint("Shutting down...\n");
@@ -896,18 +912,32 @@ void kernel_main(uintptr_t magic, uintptr_t addr) {
         } else if (starts_with(cmd_buf, "exec ")) {
             /* Loads a static ET_EXEC x86_64 ELF from a mounted filesystem
              * into its own private address space (cpu/vmm.h) and runs it
-             * (kernel/elf.c). Blocks like `wm`/`vmmtest` — the shell's own
-             * getline() and the process's syscalls must never run at once. */
-            const char *path = cmd_buf + 5;
-            while (*path == ' ') path++;
-            if (!*path) {
-                kprint_attr("Usage: exec <path>\n", RED_FG);
+             * (kernel/elf.c). argv[0] is the path itself, any further
+             * space-separated words become argv[1..] (kernel/elf.h:
+             * ELF_MAX_ARGS caps how many survive) — tokenized in place by
+             * overwriting the spaces in cmd_buf with NULs, same style as
+             * the `mount` command's manual parsing above. Blocks like
+             * `wm`/`vmmtest` — the shell's own getline() and the process's
+             * syscalls must never run at once. */
+            char *rest = cmd_buf + 5;
+            while (*rest == ' ') rest++;
+            if (!*rest) {
+                kprint_attr("Usage: exec <path> [args...]\n", RED_FG);
             } else {
+                char *argv[ELF_MAX_ARGS];
+                int argc = 0;
+                char *p = rest;
+                while (*p && argc < ELF_MAX_ARGS) {
+                    argv[argc++] = p;
+                    while (*p && *p != ' ') p++;
+                    if (*p) { *p = '\0'; p++; while (*p == ' ') p++; }
+                }
+
                 vmm_as_t *as = (vmm_as_t *)0;
-                int slot = elf_exec(path, "exec", &as);
+                int slot = elf_exec(argv[0], "exec", argc, argv, &as);
                 if (slot < 0) {
                     kprint_attr("exec: failed to load ", RED_FG);
-                    kprint((char *)path);
+                    kprint(argv[0]);
                     kprint("\n");
                 } else {
                     task_t *t = sched_get_task(slot);

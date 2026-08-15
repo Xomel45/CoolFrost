@@ -78,3 +78,33 @@ void vmm_destroy_address_space(vmm_as_t *as) {
         kfree((void *)(uintptr_t)as->owned_pages[i]);
     kfree(as);
 }
+
+int vmm_range_mapped(uint64_t pml4_phys, uint64_t va, size_t len) {
+    if (len == 0) return 1;
+    if (va < VMM_USER_BASE || va + len > VMM_USER_BASE + VMM_USER_SIZE) return 0;
+
+    uint64_t page      = va & ~0xFFFULL;
+    uint64_t last_page = (va + (uint64_t)len - 1) & ~0xFFFULL;
+
+    volatile uint64_t *pml4_tbl = (volatile uint64_t *)(uintptr_t)pml4_phys;
+    if (!(pml4_tbl[0] & VMM_PAGE_P)) return 0;
+    volatile uint64_t *pdpt_tbl = (volatile uint64_t *)(uintptr_t)(pml4_tbl[0] & PTE_ADDR_MASK);
+
+    for (;; page += 0x1000ULL) {
+        uint64_t pdpt_idx = (page >> 30) & 0x1FFULL;   /* always 1 within our window */
+        uint64_t pd_idx   = (page >> 21) & 0x1FFULL;
+        uint64_t pt_idx   = (page >> 12) & 0x1FFULL;
+
+        if (!(pdpt_tbl[pdpt_idx] & VMM_PAGE_P)) return 0;
+        volatile uint64_t *pd_tbl = (volatile uint64_t *)(uintptr_t)(pdpt_tbl[pdpt_idx] & PTE_ADDR_MASK);
+
+        if (!(pd_tbl[pd_idx] & VMM_PAGE_P)) return 0;
+        volatile uint64_t *pt_tbl = (volatile uint64_t *)(uintptr_t)(pd_tbl[pd_idx] & PTE_ADDR_MASK);
+
+        uint64_t pte = pt_tbl[pt_idx];
+        if ((pte & (VMM_PAGE_P | VMM_PAGE_U)) != (VMM_PAGE_P | VMM_PAGE_U)) return 0;
+
+        if (page == last_page) break;
+    }
+    return 1;
+}

@@ -1,0 +1,1 @@
+This is second.txt, opened by name via argv[1] passed to cat.elf.

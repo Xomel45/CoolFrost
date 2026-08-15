@@ -53,4 +53,12 @@ void ugfx_draw_cursor(ugfx_surface_t *s, int32_t x, int32_t y);
 /* SYS_GFX_PRESENT: pushes the backbuffer returned by ugfx_init() to the FB. */
 void ugfx_present(void);
 
+/* SYS_GFX_PRESENT_RECT: pushes only [x,y,w,h) of the backbuffer to the FB —
+ * the real framebuffer is uncached MMIO (boot/multiboot_entry.asm's PD@0x4000,
+ * PCD+PWT), so writing the whole screen every frame just to move something
+ * small (e.g. the cursor) is the dominant per-frame cost. Callers that only
+ * changed a small region (user/wm.c's idle/cursor-only frames) should use
+ * this instead of ugfx_present(). */
+void ugfx_present_rect(int32_t x, int32_t y, int32_t w, int32_t h);
+
 #endif

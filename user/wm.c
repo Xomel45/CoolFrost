@@ -161,10 +161,19 @@ void wm_run(void *arg) {
 
     uint64_t last_tick = usyscall0(SYS_GET_TICKS);
     int running = 1;
+    int32_t prev_mx = mx, prev_my = my;
+    uint64_t frame_count = 0;
 
     while (running) {
+        /* Set whenever something other than plain cursor motion happened
+         * this frame (button clicks, window open/close, ESC, ...) — those
+         * need a full-screen present. Pure mouse movement over an otherwise
+         * static desktop (by far the common case) only needs to push the
+         * small before/after cursor rect (SYS_GFX_PRESENT_RECT below). */
+        int structural = 0;
         event_t ev;
         while (usyscall1(SYS_EVENT_POLL, (uint64_t)(uintptr_t)&ev)) {
+            if (ev.type != EV_MOUSE_MOVE) structural = 1;
             switch (ev.type) {
             case EV_KEY_DOWN:
                 if (ev.code == 0x01) running = 0;   /* ESC */
@@ -260,7 +269,26 @@ void wm_run(void *arg) {
         window_t *order[WM_MAX_WIN];
         int n = z_gather(order, WM_MAX_WIN);
         compose(scr, order, n, mx, my);
-        ugfx_present();
+
+        /* Window content (e.g. demo_on_paint's bouncing bar) keeps animating
+         * every frame regardless of `structural` — a periodic full present
+         * keeps that visible without giving up the win on the common
+         * cursor-only case the rest of the time. */
+        frame_count++;
+        if (structural || drag != DRAG_NONE || (frame_count % 8) == 0) {
+            ugfx_present();
+        } else {
+            /* Union of the old and new 12x19 cursor sprite bounding boxes
+             * (+1px slop) — everything else on screen is unchanged, so
+             * that's the only region that actually needs to reach the FB. */
+            int32_t ux  = (prev_mx < mx) ? prev_mx : mx;
+            int32_t uy  = (prev_my < my) ? prev_my : my;
+            int32_t ux2 = ((prev_mx > mx) ? prev_mx : mx) + 13;
+            int32_t uy2 = ((prev_my > my) ? prev_my : my) + 20;
+            ugfx_present_rect(ux, uy, ux2 - ux, uy2 - uy);
+        }
+        prev_mx = mx;
+        prev_my = my;
 
         uint64_t now;
         do {

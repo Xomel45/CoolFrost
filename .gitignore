@@ -2,7 +2,11 @@ backup/
 iso/
 FrostOS.iso
 hdd.img
+ext2_part.img
+xfs_part.img
+xfs_seed/
 *.o
+*.d
 *.bin
 *.elf
 .idea
